@@ -30,6 +30,14 @@ button {
     font: inherit;
 }
 
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+    outline: 3px solid #8bb99a;
+    outline-offset: 2px;
+}
+
 .app-shell {
     min-height: 100vh;
 }
@@ -125,6 +133,11 @@ button {
 .nav-link--planned {
     color: #818b85;
     cursor: default;
+}
+
+.nav-link[href]:hover {
+    color: var(--green-dark);
+    background: #f5f8f5;
 }
 
 .sidebar-footer {
@@ -609,6 +622,304 @@ td {
     color: #b7c0ba;
 }
 
+.feedback {
+    margin: 0 0 18px;
+    padding: 12px 15px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.feedback--error {
+    border-color: #f0d3ce;
+    color: #8d3f32;
+    background: #fff7f5;
+}
+
+.feedback--success {
+    border-color: #d8e9dc;
+    color: #356746;
+    background: #f3f8f4;
+}
+
+.product-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.button {
+    display: inline-flex;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1.2;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.button--primary {
+    border-color: var(--green);
+    color: #fff;
+    background: var(--green);
+}
+
+.button--primary:hover {
+    border-color: var(--green-dark);
+    background: var(--green-dark);
+}
+
+.button--secondary {
+    border-color: #e0e6e1;
+    color: #4f5d54;
+    background: #fff;
+}
+
+.button--secondary:hover {
+    background: #f7f9f7;
+}
+
+.button--danger {
+    border-color: #a74334;
+    color: #fff;
+    background: #a74334;
+}
+
+.button--danger:hover {
+    background: #88372b;
+}
+
+.product-form-panel,
+.confirm-panel {
+    margin-bottom: 19px;
+}
+
+.product-form {
+    padding: 2px 20px 20px;
+}
+
+.form-message {
+    margin-bottom: 17px;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 17px 20px;
+}
+
+.field {
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    min-width: 0;
+}
+
+.field--wide {
+    grid-column: 1 / -1;
+}
+
+.field label {
+    color: #455149;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.field label > span[aria-hidden="true"] {
+    color: #a74334;
+}
+
+.field-optional,
+.field-help {
+    color: #8b958e;
+    font-size: 10px;
+    font-weight: 400;
+}
+
+.field input,
+.field textarea,
+.search-form input {
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid #dfe5e0;
+    border-radius: 5px;
+    color: var(--ink);
+    background: #fff;
+    font: inherit;
+    font-size: 12px;
+}
+
+.field textarea {
+    min-height: 78px;
+    resize: vertical;
+}
+
+.field input[aria-invalid="true"],
+.field textarea[aria-invalid="true"] {
+    border-color: #bd695c;
+}
+
+.input-with-prefix {
+    position: relative;
+}
+
+.input-with-prefix > span {
+    position: absolute;
+    top: 50%;
+    left: 11px;
+    color: #77827b;
+    font-size: 12px;
+    transform: translateY(-50%);
+}
+
+.input-with-prefix input {
+    padding-left: 25px;
+}
+
+.field-error {
+    color: #9b4739;
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+.form-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 9px;
+    margin-top: 20px;
+}
+
+.confirm-content {
+    padding: 0 20px 20px;
+    color: #4e5952;
+    font-size: 12px;
+}
+
+.confirm-content > p {
+    line-height: 1.6;
+}
+
+.confirm-content .form-actions {
+    margin-top: 16px;
+}
+
+.products-panel {
+    overflow: hidden;
+}
+
+.products-heading {
+    align-items: flex-start;
+}
+
+.search-form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.search-form input {
+    width: min(250px, 30vw);
+}
+
+.clear-search,
+.table-action {
+    color: var(--green);
+    font-size: 10px;
+    font-weight: 650;
+    text-decoration: none;
+}
+
+.clear-search:hover,
+.table-action:hover {
+    text-decoration: underline;
+}
+
+.empty-state {
+    padding: 30px 20px;
+    color: #78827d;
+    font-size: 12px;
+    line-height: 1.6;
+    text-align: center;
+}
+
+.empty-state p {
+    margin-bottom: 14px;
+}
+
+.empty-state a:not(.button) {
+    color: var(--green);
+    font-weight: 650;
+}
+
+.products-table {
+    min-width: 760px;
+}
+
+.product-name-cell {
+    max-width: 250px;
+}
+
+.product-name-cell strong,
+.product-name-cell > span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.product-name-cell strong {
+    color: #3b4840;
+    font-weight: 650;
+}
+
+.product-name-cell > span {
+    max-width: 235px;
+    margin-top: 3px;
+    color: #89938d;
+    font-size: 9px;
+    white-space: normal;
+}
+
+.status-pill--healthy {
+    color: #3f7755;
+    background: #edf5ef;
+}
+
+.status-pill--low {
+    color: var(--amber);
+    background: var(--amber-soft);
+}
+
+.product-actions {
+    min-width: 120px;
+    text-align: right;
+}
+
+.table-action + .table-action {
+    margin-left: 9px;
+}
+
+.table-action--danger {
+    color: #a74334;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
+}
+
 @media (max-width: 1050px) {
     .sidebar {
         width: 220px;
@@ -698,6 +1009,10 @@ td {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .product-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .summary-item {
         padding: 15px;
     }
@@ -722,6 +1037,17 @@ td {
 
     .stock-quantity {
         display: none;
+    }
+
+    .products-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .search-form input {
+        width: auto;
+        min-width: 0;
+        flex: 1;
     }
 }
 
@@ -755,6 +1081,33 @@ td {
     }
 
     .panel-heading {
+        padding-right: 14px;
+        padding-left: 14px;
+    }
+
+    .product-form {
+        padding-right: 14px;
+        padding-left: 14px;
+    }
+
+    .form-grid {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+
+    .field--wide {
+        grid-column: auto;
+    }
+
+    .search-form {
+        flex-wrap: wrap;
+    }
+
+    .search-form input {
+        flex-basis: 100%;
+    }
+
+    .confirm-content {
         padding-right: 14px;
         padding-left: 14px;
     }

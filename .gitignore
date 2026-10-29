@@ -1,0 +1,12 @@
+# Private SQLite data and its temporary journal files
+/storage/*.sqlite*
+/storage/*.db*
+
+# Local environment and runtime data
+.env
+.env.*
+!.env.example
+*.log
+
+# Operating-system files
+.DS_Store

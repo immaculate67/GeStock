@@ -1,10 +1,24 @@
 <?php
-// These figures are illustrative sample data and are not connected to a database.
+$root = dirname(__DIR__);
+require_once $root . '/app/bootstrap.php';
+
+$databaseError = null;
+try {
+    $repository = new ProductRepository(Database::connect());
+    $productSummary = $repository->summary();
+    $stockItems = $repository->dashboardStockItems();
+} catch (Throwable $exception) {
+    error_log('GeStock dashboard could not load product data: ' . $exception->getMessage());
+    $databaseError = 'Product and stock data is temporarily unavailable. Please check the private database storage and try again.';
+    $productSummary = null;
+    $stockItems = [];
+}
+
 $summary = [
-    ['label' => 'Total products', 'value' => '248', 'detail' => 'Across all categories', 'icon' => 'box'],
+    ['label' => 'Total products', 'value' => $productSummary === null ? '—' : (string) $productSummary['total_products'], 'detail' => 'Saved in your product list', 'icon' => 'box'],
     ['label' => 'Sales this month', 'value' => '$12,840', 'detail' => 'Sample monthly total', 'icon' => 'sales'],
-    ['label' => 'Low-stock items', 'value' => '08', 'detail' => 'At or below reorder level', 'icon' => 'stock'],
-    ['label' => 'Customers', 'value' => '326', 'detail' => 'Sample customer count', 'icon' => 'customers'],
+    ['label' => 'Low-stock items', 'value' => $productSummary === null ? '—' : (string) $productSummary['low_stock'], 'detail' => 'Above zero, at or below minimum', 'icon' => 'stock'],
+    ['label' => 'Out of stock', 'value' => $productSummary === null ? '—' : (string) $productSummary['out_of_stock'], 'detail' => 'Products with zero quantity', 'icon' => 'box'],
 ];
 
 $recentSales = [
@@ -14,39 +28,7 @@ $recentSales = [
     ['reference' => 'GS-1045', 'customer' => "Maya's Market", 'date' => 'Oct 07, 2026', 'items' => 1, 'total' => '$34.00', 'status' => 'Complete'],
 ];
 
-$stockItems = [
-    ['name' => 'Arabica coffee beans', 'category' => 'Pantry', 'quantity' => 8, 'unit' => 'bags', 'reorder' => 20, 'level' => 'Low'],
-    ['name' => 'Glass storage jar', 'category' => 'Housewares', 'quantity' => 14, 'unit' => 'units', 'reorder' => 18, 'level' => 'Low'],
-    ['name' => 'Cotton tote bag', 'category' => 'Accessories', 'quantity' => 32, 'unit' => 'units', 'reorder' => 20, 'level' => 'Healthy'],
-    ['name' => 'Olive oil, 500 ml', 'category' => 'Pantry', 'quantity' => 46, 'unit' => 'bottles', 'reorder' => 20, 'level' => 'Healthy'],
-];
-
-$iconPaths = [
-    'box' => '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.3 7.6 7.7 4.3 7.7-4.3M12 21v-9.1M8 5.3l8 4.5"/>',
-    'sales' => '<path d="M4 19V5m0 14h16"/><path d="m7 14 4-4 3 2 5-6"/><path d="M16 6h3v3"/>',
-    'stock' => '<path d="M4 7h16v13H4z"/><path d="M8 7V4h8v3M8 12h8m-8 4h5"/>',
-    'customers' => '<path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
-];
-
-$navigation = [
-    ['label' => 'Dashboard', 'icon' => 'grid', 'active' => true],
-    ['label' => 'Products', 'icon' => 'box'],
-    ['label' => 'Customers', 'icon' => 'customers'],
-    ['label' => 'Sales', 'icon' => 'sales'],
-    ['label' => 'Stock', 'icon' => 'stock'],
-    ['label' => 'Settings', 'icon' => 'settings'],
-];
-
-function renderIcon(string $name, array $paths): string
-{
-    $path = $paths[$name] ?? match ($name) {
-        'grid' => '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
-        'settings' => '<circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.8 1.1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.8-1.1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.8-1.1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.8 1.1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2Z"/>',
-        default => '',
-    };
-
-    return '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' . $path . '</svg>';
-}
+$activePage = 'index.php';
 ?>
 <!doctype html>
 <html lang="en">
@@ -60,38 +42,7 @@ function renderIcon(string $name, array $paths): string
 </head>
 <body>
 <div class="app-shell">
-    <aside class="sidebar" id="sidebar">
-        <a class="brand" href="#dashboard" aria-label="GeStock dashboard">
-            <span class="brand-mark" aria-hidden="true">G</span>
-            <span class="brand-name">GeStock<span class="brand-period">.</span></span>
-        </a>
-
-        <div class="workspace-label">WORKSPACE</div>
-        <nav class="primary-nav" aria-label="Main navigation">
-            <?php foreach ($navigation as $item): ?>
-                <?php if (!empty($item['active'])): ?>
-                    <a class="nav-link is-active" href="#dashboard" aria-current="page">
-                        <?= renderIcon($item['icon'], $iconPaths) ?>
-                        <span><?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?></span>
-                    </a>
-                <?php else: ?>
-                    <span class="nav-link nav-link--planned" aria-disabled="true" title="This section is not available yet">
-                        <?= renderIcon($item['icon'], $iconPaths) ?>
-                        <span><?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?></span>
-                    </span>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </nav>
-
-        <div class="sidebar-footer">
-            <div class="store-avatar" aria-hidden="true">M</div>
-            <div class="store-details">
-                <span class="store-name">Maple &amp; Main</span>
-                <span class="store-type">Sample workspace</span>
-            </div>
-            <span class="store-menu" aria-hidden="true">•••</span>
-        </div>
-    </aside>
+    <?php require $root . '/app/views/sidebar.php'; ?>
 
     <div class="main-area">
         <header class="topbar">
@@ -100,13 +51,16 @@ function renderIcon(string $name, array $paths): string
             </button>
             <div class="breadcrumb"><span>Workspace</span><span class="breadcrumb-divider">/</span><strong>Dashboard</strong></div>
             <div class="topbar-right">
-                <span class="sample-label"><span class="sample-dot"></span>Sample data</span>
+                <span class="sample-label"><span class="sample-dot"></span>Sample sales</span>
                 <span class="topbar-date"><?= htmlspecialchars(date('l, F j, Y'), ENT_QUOTES, 'UTF-8') ?></span>
                 <div class="user-avatar" aria-label="User: Alex Morgan">AM</div>
             </div>
         </header>
 
         <main class="content" id="dashboard">
+            <?php if ($databaseError !== null): ?>
+                <div class="feedback feedback--error" role="alert"><?= e($databaseError) ?></div>
+            <?php endif; ?>
             <section class="page-heading" aria-labelledby="page-title">
                 <div>
                     <p class="eyebrow">OVERVIEW</p>
@@ -120,15 +74,15 @@ function renderIcon(string $name, array $paths): string
                 </div>
             </section>
 
-            <section class="summary-grid" aria-label="Store summary sample figures">
+            <section class="summary-grid" aria-label="Product and stock summary">
                 <?php foreach ($summary as $item): ?>
                     <article class="summary-item">
                         <div class="summary-top">
                             <span class="summary-label"><?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?></span>
-                            <span class="summary-icon"><?= renderIcon($item['icon'], $iconPaths) ?></span>
+                            <span class="summary-icon"><?= renderIcon($item['icon']) ?></span>
                         </div>
-                        <strong class="summary-value"><?= htmlspecialchars($item['value'], ENT_QUOTES, 'UTF-8') ?></strong>
-                        <span class="summary-detail"><?= htmlspecialchars($item['detail'], ENT_QUOTES, 'UTF-8') ?></span>
+                        <strong class="summary-value"><?= e($item['value']) ?></strong>
+                        <span class="summary-detail"><?= e($item['detail']) ?></span>
                     </article>
                 <?php endforeach; ?>
             </section>
@@ -173,32 +127,42 @@ function renderIcon(string $name, array $paths): string
                 <div class="panel-heading">
                     <div>
                         <h2 id="stock-title">Stock overview</h2>
-                        <p>Sample quantities compared with reorder levels</p>
+                        <p>Saved product quantities compared with minimum levels</p>
                     </div>
-                    <span class="stock-count">4 items shown</span>
+                        <span class="stock-count"><?= $productSummary === null ? 'Unavailable' : count($stockItems) . ' of ' . (int) $productSummary['total_products'] . ' shown' ?></span>
                 </div>
                 <div class="stock-list">
                     <?php foreach ($stockItems as $item): ?>
-                        <?php $percentage = min(100, (int) round(($item['quantity'] / max($item['reorder'], 1)) * 100)); ?>
-                        <div class="stock-row">
-                            <div class="stock-product">
-                                <span class="product-initial" aria-hidden="true"><?= htmlspecialchars(strtoupper(substr($item['name'], 0, 1)), ENT_QUOTES, 'UTF-8') ?></span>
-                                <span class="product-details">
-                                    <strong><?= htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8') ?></strong>
-                                    <span><?= htmlspecialchars($item['category'], ENT_QUOTES, 'UTF-8') ?></span>
-                                </span>
+                            <?php
+                            $level = match (true) {
+                                (int) $item['quantity'] === 0 => 'Out of stock',
+                                (int) $item['quantity'] <= (int) $item['min_stock_level'] => 'Low stock',
+                                default => 'In stock',
+                            };
+                            $percentage = min(100, (int) round(((int) $item['quantity'] / max((int) $item['min_stock_level'], 1)) * 100));
+                            ?>
+                            <div class="stock-row">
+                                <div class="stock-product">
+                                    <span class="product-initial" aria-hidden="true"><?= e(strtoupper(substr($item['name'], 0, 1))) ?></span>
+                                    <span class="product-details">
+                                        <strong><?= e($item['name']) ?></strong>
+                                        <span><?= e($item['sku']) ?></span>
+                                    </span>
                             </div>
-                            <div class="stock-meter" role="img" aria-label="<?= $percentage ?> percent of reorder level">
-                                <span class="meter-track"><span class="meter-fill<?= $item['level'] === 'Low' ? ' is-low' : '' ?>" style="width: <?= $percentage ?>%"></span></span>
+                                <div class="stock-meter" role="img" aria-label="<?= $percentage ?> percent of minimum stock level">
+                                    <span class="meter-track"><span class="meter-fill<?= $level !== 'In stock' ? ' is-low' : '' ?>" style="width: <?= $percentage ?>%"></span></span>
+                                </div>
+                                <div class="stock-quantity">
+                                    <strong><?= (int) $item['quantity'] ?> in stock</strong>
+                                    <span>minimum <?= (int) $item['min_stock_level'] ?></span>
+                                </div>
+                                <span class="stock-status<?= $level !== 'In stock' ? ' is-low' : '' ?>"><?= e($level) ?></span>
                             </div>
-                            <div class="stock-quantity">
-                                <strong><?= (int) $item['quantity'] ?> <?= htmlspecialchars($item['unit'], ENT_QUOTES, 'UTF-8') ?></strong>
-                                <span>reorder at <?= (int) $item['reorder'] ?></span>
-                            </div>
-                            <span class="stock-status<?= $item['level'] === 'Low' ? ' is-low' : '' ?>"><?= htmlspecialchars($item['level'], ENT_QUOTES, 'UTF-8') ?></span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
+                        <?php endforeach; ?>
+                        <?php if ($databaseError === null && $stockItems === []): ?>
+                            <p class="empty-state">No products yet. <a href="products.php?action=create">Add your first product</a> to start tracking stock.</p>
+                        <?php endif; ?>
+                    </div>
             </section>
 
             <footer class="page-footer">GeStock <span>·</span> A clear view of your business.</footer>
