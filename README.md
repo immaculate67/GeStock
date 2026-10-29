@@ -1,116 +1,99 @@
 # GeStock
 
-GeStock is a small-business stock and sales management application built as a
-Portuguese vocational school's PAP project. The current milestone provides a
-SQLite-backed product and stock module alongside the existing dashboard.
+GeStock é uma aplicação local de gestão de produtos, stock e vendas para
+pequenos negócios, desenvolvida como PAP. A interface está em português
+europeu e utiliza PHP, PDO/SQLite, HTML, CSS e JavaScript sem dependências
+externas.
 
-## Technology
+## Requisitos
 
-- PHP 8.1 or later
-- PDO with the SQLite driver
-- HTML, CSS and vanilla JavaScript
-- SQLite, stored locally without a separate database server
+- PHP 8.1 ou superior com `pdo_sqlite`
+- Permissão de escrita na pasta privada `storage/`
 
-No Composer, npm, XAMPP or other package installation is required.
+Não é necessário instalar MySQL, Composer, npm, Docker ou serviços externos.
 
-## Current features
+## Preparação e primeira conta
 
-- Responsive dashboard with product, low-stock and out-of-stock counts from
-  SQLite.
-- Product list searchable by product name or SKU.
-- Create, edit and delete product records.
-- Stock quantity and minimum-stock tracking with out-of-stock, low-stock and
-  in-stock indicators.
-- Server-side validation, prepared database statements, CSRF protection and
-  confirmation before deleting a product.
-- Sales figures and sales history remain clearly labelled sample data.
-- Customers, sales processing, authentication and settings are not implemented.
-
-## Project structure
-
-```text
-app/
-├── Database.php
-├── ProductRepository.php
-├── ProductValidator.php
-├── bootstrap.php
-├── helpers.php
-└── views/sidebar.php
-public/
-├── assets/
-│   ├── css/style.css
-│   └── js/app.js
-├── index.php
-└── products.php
-scripts/
-└── init_db.php
-tests/
-└── run.php
-storage/                 # Created as needed; private SQLite database
-```
-
-The `app/` and `storage/` directories are outside the public web root. PHP pages
-and static assets served to the browser are in `public/`.
-
-## Database setup
-
-The application safely creates the private `storage/` directory and the
-`products` table the first time it needs the database. To initialise it
-explicitly from the project root, run:
+Na raiz do projeto, inicialize a base de dados:
 
 ```sh
 php scripts/init_db.php
 ```
 
-The SQLite file is `storage/gestock.sqlite`, outside `public/`. The database and
-its journal files are excluded from Git. Product prices are stored as integer
-cents to avoid floating-point rounding errors.
+O SQLite fica em `storage/gestock.sqlite`, fora da pasta pública. A inicialização
+é repetível e aplica upgrades de esquema sem apagar produtos ou outros dados
+existentes. As tabelas usam chaves estrangeiras e o SQLite ativa a respetiva
+verificação em cada ligação.
 
-## Run in GitHub Codespaces
-
-From the project root, start PHP's built-in development server:
+Inicie o servidor PHP:
 
 ```sh
 php -S 0.0.0.0:8000 -t public
 ```
 
-When Codespaces prompts about port 8000, choose **Open in Browser**. If no
-prompt appears, open the **Ports** tab and follow the forwarded URL for port
-8000. The dashboard is at `/` and product management is at `/products.php`.
+Abra `http://localhost:8000/setup.php` para criar a primeira conta de
+administrador. O assistente só fica disponível enquanto ainda não existir
+nenhum utilizador; não há credenciais predefinidas no código. Use uma
+palavra-passe com pelo menos 12 caracteres. Depois da criação, inicie sessão
+em `login.php`. Os administradores podem criar e desativar contas de
+colaboradores e administradores na área **Utilizadores**.
 
-## Product and stock management
-
-Open **Products** in the sidebar or go directly to `/products.php`. Choose
-**Add product** to save a name, unique SKU, price, quantity, and minimum stock
-level. Use the row actions to edit a product or open its deletion confirmation.
-Products are saved in SQLite and remain available after a browser refresh.
-
-Stock status is calculated consistently: zero quantity is **Out of stock**;
-positive quantity at or below the minimum is **Low stock**; quantity above the
-minimum is **In stock**. The dashboard displays the saved product totals and
-prioritises products needing attention in its stock overview.
-
-## Checks and tests
-
-Run syntax checks on all PHP files:
+Para executar uma instância de desenvolvimento com outra base de dados,
+defina opcionalmente `GESTOCK_DB_PATH` antes de iniciar o servidor. Por
+exemplo:
 
 ```sh
-find app public scripts tests -name '*.php' -print0 | xargs -0 -n1 php -l
+GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
 ```
 
-Run the isolated SQLite and validation tests:
+## Módulos
+
+- **Painel:** totais do catálogo e do stock, valor de inventário ao custo,
+  receita do dia e do mês, vendas recentes e alertas de reposição.
+- **Produtos:** pesquisa, filtros, ordenação, paginação, consulta, criação,
+  edição e eliminação protegida; códigos únicos, custos, preços, categorias,
+  fornecedores e mínimos de stock.
+- **Categorias, fornecedores e clientes:** operações de consulta e manutenção,
+  com validação; referências usadas são protegidas ou anuladas com segurança.
+- **Vendas:** checkout com artigos/quantidades, cliente opcional, preços
+  históricos e totais calculados no servidor; insuficiência de stock bloqueia
+  a venda. A anulação repõe o stock e não pode ser repetida.
+- **Movimentos de stock:** entradas, saídas e correções com motivo obrigatório,
+  histórico com quantidades anteriores e posteriores, e movimentos automáticos
+  associados a vendas e anulações.
+- **Relatórios:** receita por período, totais diários/mensais, artigos mais
+  vendidos, valor de inventário, alertas e histórico de movimentos; exportação
+  de vendas em CSV.
+- **Utilizadores e definições:** gestão de contas e configuração básica do
+  negócio, disponível apenas para administradores.
+
+Não existe processamento real de pagamentos. As vendas são registos internos
+de operação e não representam pagamentos cobrados.
+
+## Segurança e integridade
+
+As páginas exigem sessão autenticada; permissões administrativas são verificadas
+no servidor. As palavras-passe usam `password_hash`, os formulários com
+alterações verificam CSRF, a saída é escapada e as consultas usam instruções
+preparadas. O stock é alterado por transações que mantêm os movimentos e as
+quantidades sincronizados. A base de dados fica fora da raiz pública e recebe
+permissões restritas no sistema de ficheiros.
+
+## Testes
+
+Execute os testes funcionais isolados:
 
 ```sh
 php tests/run.php
 ```
 
-The tests use and remove a temporary database in the system temporary
-directory; they do not add test products to the application database.
+Os testes usam uma base de dados temporária e cobrem a compatibilidade do
+catálogo existente, inicialização repetida, categorias, fornecedores, clientes,
+autenticação, vendas, validação de stock, rollback transacional, movimentos,
+anulação e cálculos de relatório.
 
-## Known limitations
+Verifique a sintaxe PHP:
 
-Sales and customer information shown on the dashboard is illustrative sample
-data. Sales processing, customer management, accounts/authentication, and
-settings are not yet available. The application is intended as a learning
-project and does not yet include deployment hardening such as user access
-control.
+```sh
+find app public scripts tests -name '*.php' -print0 | xargs -0 -n1 php -l
+```

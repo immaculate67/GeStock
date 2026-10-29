@@ -64,6 +64,67 @@ function validRecordId(mixed $value): ?int
 
 function formatPrice(int $priceCents): string
 {
-    return '$' . number_format(intdiv($priceCents, 100)) . '.'
-        . str_pad((string) ($priceCents % 100), 2, '0', STR_PAD_LEFT);
+    return number_format(intdiv($priceCents, 100), 0, ',', '.') . ','
+        . str_pad((string) ($priceCents % 100), 2, '0', STR_PAD_LEFT) . ' €';
+}
+
+function movementTypeLabel(string $type): string
+{
+    return match ($type) {
+        'in' => 'Entrada',
+        'out' => 'Saída',
+        'correction' => 'Correção',
+        'sale' => 'Venda',
+        'sale_return' => 'Reposição por anulação',
+        default => 'Outro',
+    };
+}
+
+function requireAuthentication(): array
+{
+    $user = Auth::current();
+    if ($user === null) {
+        $auth = new Auth(Database::connect());
+        header('Location: ' . ($auth->hasUsers() ? 'login.php' : 'setup.php'), true, 303);
+        exit;
+    }
+
+    $statement = Database::connect()->prepare('SELECT name, email, role, active FROM users WHERE id = :id');
+    $statement->execute(['id' => $user['id']]);
+    $storedUser = $statement->fetch();
+    if ($storedUser === false || !(bool) $storedUser['active']) {
+        Auth::logout();
+        header('Location: login.php', true, 303);
+        exit;
+    }
+    $user = [
+        'id' => (int) $user['id'],
+        'name' => $storedUser['name'],
+        'email' => $storedUser['email'],
+        'role' => $storedUser['role'],
+    ];
+    $_SESSION['user'] = $user;
+
+    return $user;
+}
+
+function requireAdministrator(): array
+{
+    $user = requireAuthentication();
+    if ($user['role'] !== 'administrator') {
+        http_response_code(403);
+        exit('Não tem permissão para aceder a esta página.');
+    }
+
+    return $user;
+}
+
+function validDateInput(mixed $value): bool
+{
+    if (!is_string($value)) {
+        return false;
+    }
+    $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+
+    return $date !== false && $date->format('Y-m-d') === $value;
 }
