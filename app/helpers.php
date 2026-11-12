@@ -82,6 +82,16 @@ function movementTypeLabel(string $type): string
 
 function requireAuthentication(): array
 {
+    return requireUserRole(['administrator', 'employee']);
+}
+
+function requireCustomerAuthentication(): array
+{
+    return requireUserRole(['customer']);
+}
+
+function requireUserRole(array $allowedRoles): array
+{
     $user = Auth::current();
     if ($user === null) {
         $auth = new Auth(Database::connect());
@@ -97,6 +107,11 @@ function requireAuthentication(): array
         header('Location: login.php', true, 303);
         exit;
     }
+    if (!in_array($storedUser['role'], $allowedRoles, true)) {
+        header('Location: ' . ($storedUser['role'] === 'customer' ? 'customer.php' : 'index.php'), true, 303);
+        exit;
+    }
+
     $user = [
         'id' => (int) $user['id'],
         'name' => $storedUser['name'],

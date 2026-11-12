@@ -7,8 +7,9 @@ if (!$auth->hasUsers()) {
     header('Location: setup.php', true, 303);
     exit;
 }
-if (Auth::current() !== null) {
-    header('Location: index.php', true, 303);
+$currentUser = Auth::current();
+if ($currentUser !== null) {
+    header('Location: ' . ($currentUser['role'] === 'customer' ? 'customer.php' : 'index.php'), true, 303);
     exit;
 }
 $error = '';
@@ -25,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Email ou palavra-passe incorretos.';
         } else {
             Auth::login($user);
-            header('Location: index.php', true, 303);
+            header('Location: ' . ($user['role'] === 'customer' ? 'customer.php' : 'index.php'), true, 303);
             exit;
         }
     }
@@ -43,4 +44,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="field"><label for="password">Palavra-passe</label><input id="password" name="password" type="password" required autocomplete="current-password"></div>
         <div class="form-actions"><button class="button button--primary" type="submit">Entrar</button></div>
     </form>
+    <p class="page-subtitle">Ainda não tem conta? <a href="register.php">Criar conta de cliente</a></p>
 </main></body></html>

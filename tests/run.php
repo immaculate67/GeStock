@@ -45,11 +45,32 @@ try {
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )'
     );
+    $legacyPdo->exec('PRAGMA foreign_keys = ON');
+    $legacyPdo->exec(
+        'CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+            email TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(email) BETWEEN 3 AND 254),
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN (\'administrator\', \'employee\')),
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )'
+    );
+    $legacyPdo->exec("INSERT INTO users (name, email, password_hash, role) VALUES ('Admin legado', 'legacy@example.test', 'hash-legado', 'administrator')");
+    $legacyPdo->exec('CREATE TABLE legacy_user_refs (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id))');
+    $legacyPdo->exec('INSERT INTO legacy_user_refs (id, user_id) VALUES (1, 1)');
     $legacyPdo->exec("INSERT INTO products (name, sku, price_cents, quantity, min_stock_level) VALUES ('Produto legado', 'LEGACY-1', 1234, 3, 1)");
     unset($legacyPdo);
     $migratedPdo = Database::connect($legacyDatabasePath);
     $legacyProduct = $migratedPdo->query("SELECT * FROM products WHERE sku = 'LEGACY-1'")->fetch();
     $assert($legacyProduct['name'] === 'Produto legado' && $legacyProduct['cost_price_cents'] === 0, 'schema upgrade preserves existing products and adds cost data safely');
+    $legacyUser = $migratedPdo->query("SELECT name, role FROM users WHERE email = 'legacy@example.test'")->fetch();
+    $legacyAuth = new Auth($migratedPdo);
+    $legacyCustomerId = $legacyAuth->createUser('Cliente legado', 'customer@example.test', 'palavra-passe-forte-123', 'customer');
+    $assert($legacyUser['name'] === 'Admin legado' && $legacyUser['role'] === 'administrator', 'customer account migration preserves existing users');
+    $assert($legacyAuth->authenticate('customer@example.test', 'palavra-passe-forte-123')['role'] === 'customer', 'customer accounts can authenticate after upgrading the schema');
+    $assert($migratedPdo->query('PRAGMA foreign_key_check')->fetch() === false && (int) $migratedPdo->query('SELECT user_id FROM legacy_user_refs WHERE id = 1')->fetchColumn() === 1, 'customer account migration preserves user foreign keys');
     unset($migratedPdo);
 
     $emptySummary = $repository->summary();
@@ -148,6 +169,8 @@ try {
     $userId = $auth->createInitialAdministrator('Admin de Teste', 'admin@example.test', 'palavra-passe-forte-123');
     $assert($auth->authenticate('ADMIN@example.test', 'palavra-passe-forte-123')['role'] === 'administrator', 'user authentication is case-insensitive and verifies password hashes');
     $assert($auth->authenticate('admin@example.test', 'incorrecta') === null, 'authentication rejects an incorrect password');
+    $customerId = $auth->createUser('Cliente de Teste', 'customer@example.test', 'palavra-passe-forte-123', 'customer');
+    $assert($customerId > 0 && $auth->authenticate('CUSTOMER@example.test', 'palavra-passe-forte-123')['role'] === 'customer', 'customer accounts can be created and authenticated separately');
     $assert($auth->hasUsers(), 'initial administrator setup is detected after account creation');
     $secondInitialAdminRejected = false;
     try {

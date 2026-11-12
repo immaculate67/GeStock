@@ -35,8 +35,10 @@ Abra `http://localhost:8000/setup.php` para criar a primeira conta de
 administrador. O assistente só fica disponível enquanto ainda não existir
 nenhum utilizador; não há credenciais predefinidas no código. Use uma
 palavra-passe com pelo menos 12 caracteres. Depois da criação, inicie sessão
-em `login.php`. Os administradores podem criar e desativar contas de
-colaboradores e administradores na área **Utilizadores**.
+em `login.php`. Os clientes também podem criar uma conta em `register.php`;
+essas contas só acedem à área de cliente. Os administradores podem criar,
+desativar e alterar os perfis de colaboradores, clientes e administradores na
+área **Utilizadores**.
 
 Para executar uma instância de desenvolvimento com outra base de dados,
 defina opcionalmente `GESTOCK_DB_PATH` antes de iniciar o servidor. Por
@@ -66,6 +68,8 @@ GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
   de vendas em CSV.
 - **Utilizadores e definições:** gestão de contas e configuração básica do
   negócio, disponível apenas para administradores.
+- **Contas de cliente:** registo público com palavra-passe segura e área de
+  cliente isolada das funções internas de inventário e gestão.
 
 Não existe processamento real de pagamentos. As vendas são registos internos
 de operação e não representam pagamentos cobrados.

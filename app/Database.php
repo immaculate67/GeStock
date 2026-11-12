@@ -74,11 +74,12 @@ final class Database
                 name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
                 email TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(email) BETWEEN 3 AND 254),
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN (\'administrator\', \'employee\')),
+                role TEXT NOT NULL CHECK (role IN (\'administrator\', \'employee\', \'customer\')),
                 active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )'
         );
+        self::allowCustomerAccounts($pdo);
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +150,48 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_movements_product_date ON stock_movements(product_id, created_at)');
+    }
+
+    private static function allowCustomerAccounts(PDO $pdo): void
+    {
+        $definition = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")->fetchColumn();
+        if (!is_string($definition) || str_contains($definition, "'customer'")) {
+            return;
+        }
+
+        $pdo->exec('PRAGMA foreign_keys = OFF');
+        try {
+            $pdo->beginTransaction();
+            $pdo->exec(
+                'CREATE TABLE users_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+                    email TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(email) BETWEEN 3 AND 254),
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN (\'administrator\', \'employee\', \'customer\')),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+            $pdo->exec(
+                'INSERT INTO users_new (id, name, email, password_hash, role, active, created_at)
+                 SELECT id, name, email, password_hash, role, active, created_at FROM users'
+            );
+            $pdo->exec('DROP TABLE users');
+            $pdo->exec('ALTER TABLE users_new RENAME TO users');
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        } finally {
+            $pdo->exec('PRAGMA foreign_keys = ON');
+        }
+
+        if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+            throw new RuntimeException('The user account schema upgrade caused a foreign key violation.');
+        }
     }
 
     private static function addColumn(PDO $pdo, string $table, string $column, string $definition): void

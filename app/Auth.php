@@ -22,7 +22,7 @@ final class Auth
         if (strlen($password) < 12 || strlen($password) > 4096) {
             throw new InvalidArgumentException('A palavra-passe deve ter pelo menos 12 caracteres.');
         }
-        if (!in_array($role, ['administrator', 'employee'], true)) {
+        if (!in_array($role, ['administrator', 'employee', 'customer'], true)) {
             throw new InvalidArgumentException('O perfil selecionado não é válido.');
         }
         $statement = $this->pdo->prepare(

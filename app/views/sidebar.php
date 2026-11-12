@@ -32,7 +32,7 @@
         <div class="store-avatar" aria-hidden="true"><?= e(strtoupper(substr($user['name'] ?? 'U', 0, 1))) ?></div>
         <div class="store-details">
             <span class="store-name"><?= e($user['name'] ?? '') ?></span>
-            <span class="store-type"><?= ($user['role'] ?? '') === 'administrator' ? 'Administrador' : 'Colaborador' ?></span>
+            <span class="store-type"><?= match ($user['role'] ?? '') { 'administrator' => 'Administrador', 'customer' => 'Cliente', default => 'Colaborador' } ?></span>
         </div>
         <form action="logout.php" method="post">
             <input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>">
