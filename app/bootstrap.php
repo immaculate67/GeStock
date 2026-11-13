@@ -5,9 +5,13 @@ require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/ProductRepository.php';
 require_once __DIR__ . '/ProductValidator.php';
 require_once __DIR__ . '/BusinessRepository.php';
+require_once __DIR__ . '/BusinessCalendar.php';
 require_once __DIR__ . '/InventoryService.php';
+require_once __DIR__ . '/BusinessStatisticsService.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/helpers.php';
+
+date_default_timezone_set(BusinessCalendar::TIMEZONE);
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_start([

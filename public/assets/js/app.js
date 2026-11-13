@@ -5,14 +5,14 @@ if (menuToggle && sidebar) {
     menuToggle.addEventListener('click', () => {
         const isOpen = sidebar.classList.toggle('is-open');
         menuToggle.setAttribute('aria-expanded', String(isOpen));
-        menuToggle.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
+        menuToggle.setAttribute('aria-label', isOpen ? 'Fechar navegação' : 'Abrir navegação');
     });
 
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && sidebar.classList.contains('is-open')) {
             sidebar.classList.remove('is-open');
             menuToggle.setAttribute('aria-expanded', 'false');
-            menuToggle.setAttribute('aria-label', 'Open navigation menu');
+            menuToggle.setAttribute('aria-label', 'Abrir navegação');
             menuToggle.focus();
         }
     });
@@ -103,9 +103,15 @@ if (saleLines && addSaleLine) {
         remove.className = 'button button--secondary remove-sale-line';
         remove.type = 'button';
         remove.textContent = 'Remover';
+        remove.setAttribute('aria-label', `Remover produto da linha ${saleLines.children.length + 1}`);
         row.append(productField, quantityField, priceSummary, remove);
         return row;
     };
+
+    addSaleLine.hidden = false;
+    saleLines.querySelectorAll('.remove-sale-line').forEach((button) => {
+        button.hidden = false;
+    });
 
     addSaleLine.addEventListener('click', () => {
         saleLines.append(createLine());
@@ -119,5 +125,9 @@ if (saleLines && addSaleLine) {
             updateTotal();
         }
     });
-    addSaleLine.click();
+    if (saleLines.children.length === 0) {
+        addSaleLine.click();
+    } else {
+        updateTotal();
+    }
 }

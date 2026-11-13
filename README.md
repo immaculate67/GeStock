@@ -50,8 +50,11 @@ GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
 
 ## Módulos
 
-- **Painel:** totais do catálogo e do stock, valor de inventário ao custo,
-  receita do dia e do mês, vendas recentes e alertas de reposição.
+- **Painel:** receitas e contagens de vendas concluídas para hoje, ontem, esta
+  semana, mês e ano; média histórica por venda; tendência diária (30 dias) ou
+  mensal (12 meses); produtos e clientes com melhor desempenho; lucro bruto
+  estimado; valor de inventário ao custo e a preço de venda; alertas de stock,
+  movimentos e vendas recentes.
 - **Produtos:** pesquisa, filtros, ordenação, paginação, consulta, criação,
   edição e eliminação protegida; códigos únicos, custos, preços, categorias,
   fornecedores e mínimos de stock.
@@ -63,9 +66,9 @@ GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
 - **Movimentos de stock:** entradas, saídas e correções com motivo obrigatório,
   histórico com quantidades anteriores e posteriores, e movimentos automáticos
   associados a vendas e anulações.
-- **Relatórios:** receita por período, totais diários/mensais, artigos mais
-  vendidos, valor de inventário, alertas e histórico de movimentos; exportação
-  de vendas em CSV.
+- **Relatórios:** receita, custo conhecido e lucro bruto estimado por período,
+  totais diários/mensais, artigos mais vendidos, valor de inventário, alertas e
+  histórico de movimentos; exportação de vendas em CSV.
 - **Utilizadores e definições:** gestão de contas e configuração básica do
   negócio, disponível apenas para administradores.
 - **Contas de cliente:** registo público com palavra-passe segura e área de
@@ -73,6 +76,13 @@ GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
 
 Não existe processamento real de pagamentos. As vendas são registos internos
 de operação e não representam pagamentos cobrados.
+
+Os períodos de negócio usam o fuso horário `Europe/Lisbon`; as datas gravadas
+pelo SQLite são comparadas com limites UTC calculados para cada período. Novas
+linhas de venda guardam o preço de custo vigente na venda. O histórico anterior
+a esta atualização mantém o custo como desconhecido, sem o reconstruir a
+partir do custo atual do produto; por isso, os indicadores de lucro identificam
+explicitamente as linhas com custo histórico disponível.
 
 ## Segurança e integridade
 
@@ -94,7 +104,8 @@ php tests/run.php
 Os testes usam uma base de dados temporária e cobrem a compatibilidade do
 catálogo existente, inicialização repetida, categorias, fornecedores, clientes,
 autenticação, vendas, validação de stock, rollback transacional, movimentos,
-anulação e cálculos de relatório.
+anulação, migração de custos históricos desconhecidos e cálculos do painel e
+dos relatórios, incluindo limites de dia, mês e ano em `Europe/Lisbon`.
 
 Verifique a sintaxe PHP:
 

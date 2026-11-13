@@ -177,6 +177,7 @@ try {
 $productSummary = null;
 $products = [];
 $productCount = 0;
+$totalPages = 1;
 $categories = [];
 $suppliers = [];
 if ($repository !== null) {
@@ -186,6 +187,8 @@ if ($repository !== null) {
         $suppliers = Database::connect()->query('SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE')->fetchAll();
         if ($mode === 'list') {
             $productCount = $repository->count($search, $filters);
+            $totalPages = max(1, (int) ceil($productCount / $pageSize));
+            $page = min($page, $totalPages);
             $products = $repository->all($search, $filters, $pageSize, ($page - 1) * $pageSize);
         }
     } catch (Throwable $exception) {
@@ -198,55 +201,17 @@ if ($repository !== null) {
 }
 
 $activePage = 'products.php';
-$flashType = $feedback['type'] ?? 'success';
-$flashMessage = $feedback['message'] ?? '';
+$pageTitle = 'Produtos';
+$pageSubtitle = 'Gerir dados, preços e níveis de stock dos seus produtos.';
+$pageAction = $mode === 'list'
+    ? '<a class="button button--primary" href="products.php?action=create">Adicionar produto</a>'
+    : '<a class="button button--secondary" href="products.php">Voltar aos produtos</a>';
+$pageFeedback = $feedback;
+require $root . '/app/views/header.php';
 ?>
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Gerir produtos, preços e níveis de stock no GeStock.">
-    <title>Produtos | GeStock</title>
-    <link rel="stylesheet" href="assets/css/style.css">
-    <script src="assets/js/app.js" defer></script>
-</head>
-<body>
-<div class="app-shell">
-    <?php require $root . '/app/views/sidebar.php'; ?>
-
-    <div class="main-area">
-        <header class="topbar">
-            <button class="menu-toggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar">
-                <span></span><span></span><span></span>
-            </button>
-            <div class="breadcrumb"><span>GeStock</span><span class="breadcrumb-divider">/</span><strong>Produtos</strong></div>
-            <div class="topbar-right">
-                <span class="sample-label"><span class="sample-dot"></span>Stock real</span>
-                <span class="topbar-date"><?= e(date('l, F j, Y')) ?></span>
-                <div class="user-avatar" aria-label="<?= e($user['name']) ?>"><?= e(strtoupper(substr($user['name'], 0, 1))) ?></div>
-            </div>
-        </header>
-
-        <main class="content">
-            <section class="page-heading" aria-labelledby="page-title">
-                <div>
-                    <p class="eyebrow">INVENTÁRIO</p>
-                    <h1 id="page-title">Produtos</h1>
-                    <p class="page-subtitle">Gerir dados, preços e níveis de stock dos seus produtos.</p>
-                </div>
-                <?php if ($mode === 'list'): ?>
-                    <a class="button button--primary" href="products.php?action=create">Adicionar produto</a>
-                <?php else: ?>
-                    <a class="button button--secondary" href="products.php">Voltar aos produtos</a>
-                <?php endif; ?>
-            </section>
 
             <?php if ($pageError !== null): ?>
                 <div class="feedback feedback--error" role="alert"><?= e($pageError) ?></div>
-            <?php endif; ?>
-            <?php if ($flashMessage !== ''): ?>
-                <div class="feedback feedback--<?= $flashType === 'success' ? 'success' : 'error' ?>" role="<?= $flashType === 'success' ? 'status' : 'alert' ?>"><?= e($flashMessage) ?></div>
             <?php endif; ?>
 
             <section class="summary-grid product-summary" aria-label="Resumo de stock">
@@ -367,30 +332,30 @@ $flashMessage = $feedback['message'] ?? '';
                                 <button class="button button--danger" type="submit">Eliminar produto</button>
                             </form>
                         <?php else: ?>
-                            <p class="empty-state">The product is unavailable. Return to the list to continue.</p>
+                            <p class="empty-state">O produto já não está disponível. Volte à lista para continuar.</p>
                         <?php endif; ?>
                     </div>
                 </section>
             <?php elseif ($mode === 'list'): ?>
                 <section class="panel products-panel" aria-labelledby="products-title">
-                    <div class="panel-heading products-heading">
+                    <div class="panel-heading products-heading data-panel-heading">
                         <div>
                         <h2 id="products-title">Lista de produtos</h2>
                         <p><?= $productCount ?> <?= $productCount === 1 ? 'produto' : 'produtos' ?><?= $search !== '' ? ' encontrados' : ' no inventário' ?></p>
                         </div>
-                        <form class="search-form" method="get" action="products.php" role="search">
+                    </div>
+                    <form class="search-form filter-form" method="get" action="products.php" role="search">
                         <label class="visually-hidden" for="product-search">Pesquisar por nome ou código</label>
                         <input id="product-search" type="search" name="q" placeholder="Nome ou código" value="<?= e($search) ?>">
                         <select name="category_id" aria-label="Filtrar categoria"><option value="">Todas as categorias</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id'] ?>"<?= (string) $category['id'] === $filters['category_id'] ? ' selected' : '' ?>><?= e($category['name']) ?></option><?php endforeach; ?></select>
                         <select name="stock" aria-label="Filtrar estado de stock"><option value="">Todos os estados</option><option value="low"<?= $filters['stock'] === 'low' ? ' selected' : '' ?>>Stock baixo</option><option value="out"<?= $filters['stock'] === 'out' ? ' selected' : '' ?>>Sem stock</option><option value="available"<?= $filters['stock'] === 'available' ? ' selected' : '' ?>>Disponível</option></select>
-                        <select name="sort" aria-label="Ordenar por"><option value="name">Nome</option><option value="sku"<?= $filters['sort'] === 'sku' ? ' selected' : '' ?>>Código</option><option value="price"<?= $filters['sort'] === 'price' ? ' selected' : '' ?>>Preço</option><option value="quantity"<?= $filters['sort'] === 'quantity' ? ' selected' : '' ?>>Stock</option><option value="created"<?= $filters['sort'] === 'created' ? ' selected' : '' ?>>Data</option></select>
+                        <select name="sort" aria-label="Ordenar por"><option value="name"<?= $filters['sort'] === 'name' ? ' selected' : '' ?>>Nome</option><option value="sku"<?= $filters['sort'] === 'sku' ? ' selected' : '' ?>>Código</option><option value="price"<?= $filters['sort'] === 'price' ? ' selected' : '' ?>>Preço</option><option value="quantity"<?= $filters['sort'] === 'quantity' ? ' selected' : '' ?>>Stock</option><option value="created"<?= $filters['sort'] === 'created' ? ' selected' : '' ?>>Data</option></select>
                         <select name="direction" aria-label="Sentido"><option value="asc">Ascendente</option><option value="desc"<?= $filters['direction'] === 'desc' ? ' selected' : '' ?>>Descendente</option></select>
                         <button class="button button--secondary" type="submit">Filtrar</button>
-                        <?php if ($search !== '' || $filters['category_id'] !== '' || $filters['stock'] !== ''): ?><a class="clear-search" href="products.php">Limpar</a><?php endif; ?>
-                    </form>
-                    </div>
+                        <?php if ($search !== '' || $filters['category_id'] !== '' || $filters['stock'] !== '' || $filters['sort'] !== 'name' || $filters['direction'] !== 'asc'): ?><a class="clear-search" href="products.php">Limpar filtros</a><?php endif; ?>
+                        </form>
                     <?php if ($repository === null): ?>
-                        <div class="empty-state"><p>The product list is unavailable right now. Use the error message above and try again when database access is restored.</p></div>
+                        <div class="empty-state"><p>A lista de produtos está temporariamente indisponível. Volte a tentar quando o acesso à base de dados for restabelecido.</p></div>
                     <?php elseif ($products === []): ?>
                         <div class="empty-state">
                             <?php if ($search !== ''): ?>
@@ -413,7 +378,7 @@ $flashMessage = $feedback['message'] ?? '';
                                     <th scope="col">STOCK</th>
                                     <th scope="col">MÍNIMO</th>
                                     <th scope="col">ESTADO</th>
-                                    <th scope="col"><span class="visually-hidden">Actions</span></th>
+                                    <th scope="col"><span class="visually-hidden">Ações</span></th>
                                 </tr>
                                 </thead>
                                 <tbody>
@@ -450,20 +415,20 @@ $flashMessage = $feedback['message'] ?? '';
                             </table>
                         </div>
                         <?php if ($productCount > $pageSize): ?>
-                            <nav class="pagination" aria-label="Paginação">
-                                <?php for ($pageNumber = 1; $pageNumber <= (int) ceil($productCount / $pageSize); $pageNumber++): ?>
-                                    <?php $query = http_build_query(array_filter(['q' => $search, 'category_id' => $filters['category_id'], 'stock' => $filters['stock'], 'sort' => $filters['sort'], 'direction' => $filters['direction'], 'page' => $pageNumber], static fn($value): bool => $value !== '')); ?>
-                                    <a class="button <?= $pageNumber === $page ? 'button--primary' : 'button--secondary' ?>" href="products.php?<?= e($query) ?>"<?= $pageNumber === $page ? ' aria-current="page"' : '' ?>><?= $pageNumber ?></a>
-                                <?php endfor; ?>
+                            <nav class="pagination" aria-label="Paginação de produtos">
+                                <?php if ($page > 1): ?>
+                                    <?php $query = http_build_query(array_filter(['q' => $search, 'category_id' => $filters['category_id'], 'stock' => $filters['stock'], 'sort' => $filters['sort'], 'direction' => $filters['direction'], 'page' => $page - 1], static fn($value): bool => $value !== '')); ?>
+                                    <a class="button button--secondary" href="products.php?<?= e($query) ?>" rel="prev">Anterior</a>
+                                <?php endif; ?>
+                                <span class="pagination-summary">Página <?= $page ?> de <?= $totalPages ?></span>
+                                <?php if ($page < $totalPages): ?>
+                                    <?php $query = http_build_query(array_filter(['q' => $search, 'category_id' => $filters['category_id'], 'stock' => $filters['stock'], 'sort' => $filters['sort'], 'direction' => $filters['direction'], 'page' => $page + 1], static fn($value): bool => $value !== '')); ?>
+                                    <a class="button button--secondary" href="products.php?<?= e($query) ?>" rel="next">Seguinte</a>
+                                <?php endif; ?>
                             </nav>
                         <?php endif; ?>
                     <?php endif; ?>
                 </section>
             <?php endif; ?>
 
-            <footer class="page-footer">GeStock <span>·</span> Gestão clara para o seu negócio.</footer>
-        </main>
-    </div>
-</div>
-</body>
-</html>
+<?php require $root . '/app/views/footer.php'; ?>

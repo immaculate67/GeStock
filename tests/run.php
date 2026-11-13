@@ -5,7 +5,9 @@ require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/ProductRepository.php';
 require_once dirname(__DIR__) . '/app/ProductValidator.php';
 require_once dirname(__DIR__) . '/app/BusinessRepository.php';
+require_once dirname(__DIR__) . '/app/BusinessCalendar.php';
 require_once dirname(__DIR__) . '/app/InventoryService.php';
+require_once dirname(__DIR__) . '/app/BusinessStatisticsService.php';
 require_once dirname(__DIR__) . '/app/Auth.php';
 require_once dirname(__DIR__) . '/app/helpers.php';
 
@@ -61,6 +63,25 @@ try {
     $legacyPdo->exec('CREATE TABLE legacy_user_refs (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id))');
     $legacyPdo->exec('INSERT INTO legacy_user_refs (id, user_id) VALUES (1, 1)');
     $legacyPdo->exec("INSERT INTO products (name, sku, price_cents, quantity, min_stock_level) VALUES ('Produto legado', 'LEGACY-1', 1234, 3, 1)");
+    $legacyPdo->exec(
+        'CREATE TABLE sales (
+            id INTEGER PRIMARY KEY, sale_number TEXT NOT NULL, client_id INTEGER NULL,
+            client_name_snapshot TEXT NOT NULL, total_cents INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT \'completed\', created_by INTEGER NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, cancelled_at TEXT NULL,
+            cancelled_by INTEGER NULL
+        )'
+    );
+    $legacyPdo->exec(
+        'CREATE TABLE sale_items (
+            id INTEGER PRIMARY KEY, sale_id INTEGER NOT NULL REFERENCES sales(id),
+            product_id INTEGER NOT NULL REFERENCES products(id), product_name_snapshot TEXT NOT NULL,
+            sku_snapshot TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL,
+            line_total_cents INTEGER NOT NULL
+        )'
+    );
+    $legacyPdo->exec("INSERT INTO sales (id, sale_number, client_name_snapshot, total_cents) VALUES (1, 'LEGACY-SALE', 'Cliente legado', 1234)");
+    $legacyPdo->exec("INSERT INTO sale_items (id, sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents) VALUES (1, 1, 1, 'Produto legado', 'LEGACY-1', 1, 1234, 1234)");
     unset($legacyPdo);
     $migratedPdo = Database::connect($legacyDatabasePath);
     $legacyProduct = $migratedPdo->query("SELECT * FROM products WHERE sku = 'LEGACY-1'")->fetch();
@@ -69,12 +90,19 @@ try {
     $legacyAuth = new Auth($migratedPdo);
     $legacyCustomerId = $legacyAuth->createUser('Cliente legado', 'customer@example.test', 'palavra-passe-forte-123', 'customer');
     $assert($legacyUser['name'] === 'Admin legado' && $legacyUser['role'] === 'administrator', 'customer account migration preserves existing users');
+    $legacySaleItem = $migratedPdo->query('SELECT unit_cost_cents FROM sale_items WHERE id = 1')->fetch();
+    $assert($legacySaleItem['unit_cost_cents'] === null && (int) $migratedPdo->query('SELECT COUNT(*) FROM sale_items')->fetchColumn() === 1, 'historical sale items survive the additive cost snapshot migration as unknown');
+    $migratedPdo->exec("UPDATE sales SET created_at = '2026-07-01 10:00:00' WHERE id = 1");
+    $legacyProfit = (new BusinessStatisticsService($migratedPdo))->reportSummary('2026-07-01', '2026-07-01')['summary'];
+    $assert($legacyProfit['known_cost_lines'] === 0 && $legacyProfit['gross_profit_cents'] === 0, 'reports do not infer missing historical costs from current product records');
     $assert($legacyAuth->authenticate('customer@example.test', 'palavra-passe-forte-123')['role'] === 'customer', 'customer accounts can authenticate after upgrading the schema');
     $assert($migratedPdo->query('PRAGMA foreign_key_check')->fetch() === false && (int) $migratedPdo->query('SELECT user_id FROM legacy_user_refs WHERE id = 1')->fetchColumn() === 1, 'customer account migration preserves user foreign keys');
     unset($migratedPdo);
 
     $emptySummary = $repository->summary();
     $assert((int) $emptySummary['total_products'] === 0 && (int) $emptySummary['low_stock'] === 0 && (int) $emptySummary['out_of_stock'] === 0, 'dashboard summary supports an empty database');
+    $emptyDashboard = (new BusinessStatisticsService($pdo))->dashboard(new DateTimeImmutable('2026-07-01 12:00:00', BusinessCalendar::timezone()));
+    $assert($emptyDashboard['sales']['today_revenue_cents'] === 0 && $emptyDashboard['sales']['year_sales_count'] === 0 && count($emptyDashboard['revenue_trend']) === 30 && count($emptyDashboard['monthly_trend']) === 12, 'business statistics return zero totals and usable daily and monthly trends for an empty database');
     $assert($repository->dashboardStockItems() === [], 'dashboard stock list supports an empty database');
 
     [$validProduct, $validationErrors] = $validator->validate([
@@ -141,7 +169,8 @@ try {
         'min_stock_level' => 5,
     ]));
     $summary = $repository->summary();
-    $assert((int) $summary['low_stock'] === 1 && (int) $summary['in_stock'] === 1, 'low and in-stock status boundaries follow the specified rules');
+    $assert((int) $summary['low_stock'] === 1 && (int) $summary['in_stock'] === 1 && (int) $summary['approaching_stock'] === 1, 'low, in-stock and approaching-minimum boundaries follow the specified rules');
+    $assert((int) $summary['potential_sales_value_cents'] === 14289, 'potential inventory value uses current stock and selling prices in integer cents');
     $assert($repository->count('', ['stock' => 'low']) === 1 && $repository->count('', ['stock' => 'out']) === 1, 'product filters report matching low-stock and out-of-stock totals');
     $assert($repository->dashboardStockItems()[0]['id'] === $productId, 'dashboard stock prioritises out-of-stock items');
 
@@ -162,8 +191,19 @@ try {
     $assert($business->find('categories', $categoryId)['name'] === 'Bebidas', 'categories can be created and retrieved');
     $assert($business->find('suppliers', $supplierId)['email'] === 'rita@example.test', 'suppliers can be created and retrieved');
     $assert($business->find('clients', $clientId)['name'] === 'Cliente de Teste', 'clients can be created and retrieved');
+    $requiredRecordMessage = '';
+    try {
+        $business->save('categories', ['name' => '', 'description' => '']);
+    } catch (InvalidArgumentException $exception) {
+        $requiredRecordMessage = $exception->getMessage();
+    }
+    $assert($requiredRecordMessage === 'O campo nome é obrigatório.', 'record validation feedback uses Portuguese field labels');
     $business->save('categories', ['name' => 'Bebidas e café', 'description' => 'Atualizada'], $categoryId);
     $assert($business->find('categories', $categoryId)['name'] === 'Bebidas e café', 'categories can be updated');
+    $business->save('categories', ['name' => 'Cereais', 'description' => '']);
+    $business->save('categories', ['name' => 'Conservas', 'description' => '']);
+    $categoryPage = $business->all('categories', '', 1, 1);
+    $assert($business->count('categories') === 3 && $business->count('categories', 'Cereais') === 1 && count($categoryPage) === 1 && $categoryPage[0]['name'] === 'Cereais', 'business records support filtered counts and stable pagination');
 
     $auth = new Auth($pdo);
     $userId = $auth->createInitialAdministrator('Admin de Teste', 'admin@example.test', 'palavra-passe-forte-123');
@@ -194,6 +234,8 @@ try {
         'name' => 'Produto com movimentos', 'sku' => 'MANAGED-1', 'quantity' => 5,
     ]), $userId);
     $assert($repository->find($managedProductId)['quantity'] === 5 && count($service->movements(['product_id' => (string) $managedProductId, 'type' => 'correction'])) === 1, 'product edits that change stock record a correction movement');
+    $movementPage = $service->movements(['product_id' => (string) $managedProductId], 1, 1);
+    $assert($service->movementCount(['product_id' => (string) $managedProductId]) === 2 && count($movementPage) === 1 && $movementPage[0]['movement_type'] === 'in', 'stock movement history supports filtered counts and pagination');
     $managedProductDeleteRejected = false;
     try {
         $repository->delete($managedProductId);
@@ -249,6 +291,78 @@ try {
 
     $report = $service->reportSummary(date('Y-m-01'), date('Y-m-d'));
     $assert((int) $report['summary']['sales_count'] === 0 && $report['inventory_value_cents'] === 7000, 'reports exclude cancelled sales and calculate inventory value from cost');
+
+    $performanceProductA = $repository->create(array_replace($validProduct, [
+        'name' => 'Produto de desempenho A', 'sku' => 'PERF-A', 'price_cents' => 1000, 'cost_price_cents' => 300,
+        'quantity' => 100, 'min_stock_level' => 10,
+    ]));
+    $performanceProductB = $repository->create(array_replace($validProduct, [
+        'name' => 'Produto de desempenho B', 'sku' => 'PERF-B', 'price_cents' => 2000, 'cost_price_cents' => 600,
+        'quantity' => 100, 'min_stock_level' => 10,
+    ]));
+    $setPerformanceSaleDate = static function (int $id, string $utcDateTime) use ($pdo): void {
+        $saleDate = $pdo->prepare('UPDATE sales SET created_at = :created_at WHERE id = :id');
+        $saleDate->execute(['created_at' => $utcDateTime, 'id' => $id]);
+        $movementDate = $pdo->prepare('UPDATE stock_movements SET created_at = :created_at WHERE sale_id = :id');
+        $movementDate->execute(['created_at' => $utcDateTime, 'id' => $id]);
+    };
+    $historicSale = $service->createSale($clientId, [
+        ['product_id' => $performanceProductA, 'quantity' => 2],
+        ['product_id' => $performanceProductB, 'quantity' => 1],
+    ], $userId);
+    $setPerformanceSaleDate($historicSale, '2026-06-30 22:50:00');
+    $historicItems = $service->sale($historicSale)['items'];
+    $assert((int) $service->sale($historicSale)['total_cents'] === 4000 && count($historicItems) === 2, 'a sale with multiple products preserves its exact aggregate revenue');
+    $assert((int) $historicItems[0]['unit_price_cents'] === 1000 && (int) $historicItems[0]['unit_cost_cents'] === 300, 'sale items snapshot historical selling price and purchase cost');
+
+    $updatedPerformanceProduct = array_intersect_key(
+        $repository->find($performanceProductA),
+        array_flip(['name', 'sku', 'description', 'price_cents', 'cost_price_cents', 'quantity', 'min_stock_level', 'category_id', 'supplier_id'])
+    );
+    $repository->update($performanceProductA, array_replace($updatedPerformanceProduct, ['price_cents' => 1500, 'cost_price_cents' => 450]));
+    $cancelledPerformanceSale = $service->createSale($clientId, [
+        ['product_id' => $performanceProductA, 'quantity' => 1],
+        ['product_id' => $performanceProductB, 'quantity' => 1],
+    ], $userId);
+    $setPerformanceSaleDate($cancelledPerformanceSale, '2026-06-30 23:10:00');
+    $service->cancelSale($cancelledPerformanceSale, $userId);
+    $setPerformanceSaleDate($cancelledPerformanceSale, '2026-06-30 23:10:00');
+    $currentPriceSale = $service->createSale($clientId, [['product_id' => $performanceProductA, 'quantity' => 2]], $userId);
+    $setPerformanceSaleDate($currentPriceSale, '2026-07-01 01:00:00');
+    $currentPerformanceProduct = array_intersect_key(
+        $repository->find($performanceProductA),
+        array_flip(['name', 'sku', 'description', 'price_cents', 'cost_price_cents', 'quantity', 'min_stock_level', 'category_id', 'supplier_id'])
+    );
+    $repository->update($performanceProductA, array_replace($currentPerformanceProduct, ['price_cents' => 1900, 'cost_price_cents' => 999]));
+    $secondTodaySale = $service->createSale($clientId, [['product_id' => $performanceProductB, 'quantity' => 1]], $userId);
+    $setPerformanceSaleDate($secondTodaySale, '2026-07-01 05:00:00');
+    $assert((int) $service->sale($currentPriceSale)['items'][0]['unit_price_cents'] === 1500 && (int) $service->sale($currentPriceSale)['items'][0]['unit_cost_cents'] === 450, 'later sales keep changed historical selling prices and costs');
+
+    $yearBoundarySale = $service->createSale($clientId, [['product_id' => $performanceProductB, 'quantity' => 1]], $userId);
+    $setPerformanceSaleDate($yearBoundarySale, '2026-01-01 00:30:00');
+    $priorYearSale = $service->createSale($clientId, [['product_id' => $performanceProductB, 'quantity' => 1]], $userId);
+    $setPerformanceSaleDate($priorYearSale, '2025-12-31 23:30:00');
+    $service->adjustStock($performanceProductA, 'correction', 94, 'Correção para testar o painel', $userId);
+    $pdo->prepare('UPDATE stock_movements SET created_at = :created_at WHERE product_id = :product_id AND movement_type = \'correction\'')
+        ->execute(['created_at' => '2026-07-01 03:00:00', 'product_id' => $performanceProductA]);
+
+    $fixedNow = new DateTimeImmutable('2026-07-01 12:00:00', BusinessCalendar::timezone());
+    $performanceDashboard = (new BusinessStatisticsService($pdo))->dashboard($fixedNow);
+    $assert($performanceDashboard['sales']['today_revenue_cents'] === 5000 && $performanceDashboard['sales']['yesterday_revenue_cents'] === 4000, 'sales crossing Lisbon midnight are assigned to the correct local day');
+    $assert($performanceDashboard['sales']['month_revenue_cents'] === 5000 && $performanceDashboard['sales']['previous_month_revenue_cents'] === 4000, 'sales across a local month boundary are assigned to the correct month');
+    $assert($performanceDashboard['sales']['today_sales_count'] === 2 && $performanceDashboard['sales']['month_sales_count'] === 2 && $performanceDashboard['sales']['average_sale_cents'] === 2600, 'completed sale counts and the all-time average use completed sales only');
+    $assert($performanceDashboard['sales']['year_revenue_cents'] === 11000 && $performanceDashboard['sales']['year_sales_count'] === 4, 'year totals use Lisbon boundaries and exclude cancelled and prior-year sales');
+    $assert($performanceDashboard['profit']['month_cost_cents'] === 1500 && $performanceDashboard['profit']['month_profit_cents'] === 3500, 'gross profit uses per-sale historical costs and excludes cancelled sales');
+    $assert($performanceDashboard['best_sellers'][0]['quantity'] === 2 && $performanceDashboard['best_sellers'][0]['revenue_cents'] === 3000, 'product performance aggregates multiple items at historical sale prices');
+    $assert($performanceDashboard['revenue_trend'][29]['date'] === '2026-07-01' && $performanceDashboard['revenue_trend'][29]['revenue_cents'] === 5000, 'dashboard daily trend sums sales from multiple hours on the same local date');
+    $assert($performanceDashboard['customers'][0]['sales_count'] === 2 && $performanceDashboard['customers'][0]['revenue_cents'] === 5000, 'customer breakdown aggregates completed sales against customer snapshots');
+    $assert($performanceDashboard['movements']['corrections_count'] === 1 && $performanceDashboard['movements']['corrections_units'] === 2, 'movement totals distinguish stock corrections and adjusted units');
+    $assert($performanceDashboard['movements']['entries_units'] === 2 && $performanceDashboard['movements']['exits_units'] === 7, 'movement totals include sale returns and correction direction');
+    $performanceReport = $service->reportSummary('2026-06-30', '2026-07-01');
+    $assert($performanceReport['summary']['sales_count'] === 3 && $performanceReport['summary']['revenue_cents'] === 9000, 'reports and sales history share the same local date boundaries and completed-sale totals');
+    $assert($performanceReport['summary']['cost_cents'] === 2700 && $performanceReport['summary']['gross_profit_cents'] === 6300, 'report profit and cost agree with historical sale-item snapshots');
+    $assert($service->salesCount('', '2026-07-01', '2026-07-01', 'completed') === 2, 'sales history date filtering follows Europe/Lisbon calendar days');
+
     $categoryDeleteRejected = false;
     try {
         $business->delete('categories', $categoryId);

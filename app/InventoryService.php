@@ -88,7 +88,7 @@ final class InventoryService
             $products = [];
             $total = 0;
             foreach ($quantities as $productId => $quantity) {
-                $query = $this->pdo->prepare('SELECT id, name, sku, price_cents, quantity FROM products WHERE id = :id');
+                $query = $this->pdo->prepare('SELECT id, name, sku, price_cents, cost_price_cents, quantity FROM products WHERE id = :id');
                 $query->execute(['id' => $productId]);
                 $product = $query->fetch();
                 if ($product === false) {
@@ -96,6 +96,9 @@ final class InventoryService
                 }
                 if ((int) $product['quantity'] < $quantity) {
                     throw new DomainException('Stock insuficiente para ' . $product['name'] . '. Disponível: ' . $product['quantity'] . '.');
+                }
+                if ((int) $product['price_cents'] > intdiv(PHP_INT_MAX, $quantity)) {
+                    throw new DomainException('O total da venda excede o limite suportado.');
                 }
                 $lineTotal = (int) $product['price_cents'] * $quantity;
                 if ($lineTotal > PHP_INT_MAX - $total) {
@@ -119,8 +122,8 @@ final class InventoryService
             ]);
             $saleId = (int) $this->pdo->lastInsertId();
             $insertItem = $this->pdo->prepare(
-                'INSERT INTO sale_items (sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents)
-                 VALUES (:sale_id, :product_id, :name, :sku, :quantity, :price, :line_total)'
+                'INSERT INTO sale_items (sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents, unit_cost_cents)
+                 VALUES (:sale_id, :product_id, :name, :sku, :quantity, :price, :line_total, :unit_cost)'
             );
             foreach ($products as $productId => [$product, $quantity, $lineTotal]) {
                 $before = (int) $product['quantity'];
@@ -133,6 +136,7 @@ final class InventoryService
                     'quantity' => $quantity,
                     'price' => $product['price_cents'],
                     'line_total' => $lineTotal,
+                    'unit_cost' => $product['cost_price_cents'],
                 ]);
             }
             $this->pdo->commit();
@@ -216,12 +220,12 @@ final class InventoryService
             $parameters['search'] = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
         }
         if ($this->validDate($from)) {
-            $where[] = "date(created_at, 'localtime') >= :from_date";
-            $parameters['from_date'] = $from;
+            $where[] = 'created_at >= :from_date';
+            $parameters['from_date'] = BusinessCalendar::startOfDayUtc($from);
         }
         if ($this->validDate($to)) {
-            $where[] = "date(created_at, 'localtime') <= :to_date";
-            $parameters['to_date'] = $to;
+            $where[] = 'created_at < :to_date';
+            $parameters['to_date'] = BusinessCalendar::startOfNextDayUtc($to);
         }
         if (in_array($status, ['completed', 'cancelled'], true)) {
             $where[] = 'status = :status';
@@ -248,12 +252,12 @@ final class InventoryService
             $parameters['search'] = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $search) . '%';
         }
         if ($this->validDate($from)) {
-            $where[] = "date(created_at, 'localtime') >= :from_date";
-            $parameters['from_date'] = $from;
+            $where[] = 'created_at >= :from_date';
+            $parameters['from_date'] = BusinessCalendar::startOfDayUtc($from);
         }
         if ($this->validDate($to)) {
-            $where[] = "date(created_at, 'localtime') <= :to_date";
-            $parameters['to_date'] = $to;
+            $where[] = 'created_at < :to_date';
+            $parameters['to_date'] = BusinessCalendar::startOfNextDayUtc($to);
         }
         if (in_array($status, ['completed', 'cancelled'], true)) {
             $where[] = 'status = :status';
@@ -281,95 +285,44 @@ final class InventoryService
         return $sale;
     }
 
-    public function movements(array $filters = [], int $limit = 200): array
+    public function movements(array $filters = [], int $limit = 200, int $offset = 0): array
     {
-        $where = [];
-        $parameters = [];
-        if (isset($filters['product_id']) && ctype_digit((string) $filters['product_id'])) {
-            $where[] = 'm.product_id = :product_id';
-            $parameters['product_id'] = (int) $filters['product_id'];
-        }
-        if (in_array($filters['type'] ?? '', ['in', 'out', 'correction', 'sale', 'sale_return'], true)) {
-            $where[] = 'm.movement_type = :type';
-            $parameters['type'] = $filters['type'];
-        }
-        if ($this->validDate($filters['from'] ?? '')) {
-            $where[] = "date(m.created_at, 'localtime') >= :from_date";
-            $parameters['from_date'] = $filters['from'];
-        }
-        if ($this->validDate($filters['to'] ?? '')) {
-            $where[] = "date(m.created_at, 'localtime') <= :to_date";
-            $parameters['to_date'] = $filters['to'];
-        }
+        [$where, $parameters] = $this->movementFilter($filters);
         $sql = 'SELECT m.*, p.name AS product_name, p.sku FROM stock_movements m
                 JOIN products p ON p.id = m.product_id' .
-            ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY m.created_at DESC, m.id DESC LIMIT :limit';
+            $where . ' ORDER BY m.created_at DESC, m.id DESC LIMIT :limit OFFSET :offset';
         $statement = $this->pdo->prepare($sql);
         foreach ($parameters as $key => $value) {
             $statement->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
         }
         $statement->bindValue('limit', max(1, min(1000, $limit)), PDO::PARAM_INT);
+        $statement->bindValue('offset', max(0, $offset), PDO::PARAM_INT);
         $statement->execute();
 
         return $statement->fetchAll();
     }
 
+    public function movementCount(array $filters = []): int
+    {
+        [$where, $parameters] = $this->movementFilter($filters);
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM stock_movements m' . $where);
+        $statement->execute($parameters);
+
+        return (int) $statement->fetchColumn();
+    }
+
     public function dashboard(): array
     {
-        $products = new ProductRepository($this->pdo);
-        $summary = $products->summary();
-        $revenues = $this->pdo->query(
-            "SELECT
-                COALESCE(SUM(CASE WHEN date(created_at, 'localtime') = date('now','localtime') THEN total_cents ELSE 0 END), 0) AS today_cents,
-                COALESCE(SUM(CASE WHEN strftime('%Y-%m', created_at, 'localtime') = strftime('%Y-%m','now','localtime') THEN total_cents ELSE 0 END), 0) AS month_cents
-             FROM sales WHERE status = 'completed'"
-        )->fetch();
-        return [
-            'summary' => $summary,
-            'today_cents' => (int) $revenues['today_cents'],
-            'month_cents' => (int) $revenues['month_cents'],
-            'recent_sales' => $this->sales('', '', '', 5),
-            'stock_items' => $products->dashboardStockItems(8),
-        ];
+        return (new BusinessStatisticsService($this->pdo))->dashboard();
     }
 
     public function reportSummary(string $from, string $to): array
     {
-        $statement = $this->pdo->prepare(
-            "SELECT COUNT(*) AS sales_count, COALESCE(SUM(total_cents), 0) AS revenue_cents
-             FROM sales              WHERE status = 'completed' AND date(created_at, 'localtime') BETWEEN :from_date AND :to_date"
-        );
-        $statement->execute(['from_date' => $from, 'to_date' => $to]);
-        $daily = $this->pdo->prepare(
-            "SELECT date(created_at, 'localtime') AS report_date, SUM(total_cents) AS revenue_cents
-             FROM sales WHERE status = 'completed' AND date(created_at, 'localtime') BETWEEN :from_date AND :to_date
-             GROUP BY date(created_at, 'localtime') ORDER BY report_date DESC"
-        );
-        $daily->execute(['from_date' => $from, 'to_date' => $to]);
-        $monthly = $this->pdo->prepare(
-            "SELECT strftime('%Y-%m', created_at, 'localtime') AS report_month, SUM(total_cents) AS revenue_cents
-             FROM sales WHERE status = 'completed' AND date(created_at, 'localtime') BETWEEN :from_date AND :to_date
-             GROUP BY strftime('%Y-%m', created_at, 'localtime') ORDER BY report_month DESC"
-        );
-        $monthly->execute(['from_date' => $from, 'to_date' => $to]);
-        $best = $this->pdo->prepare(
-            "SELECT product_name_snapshot AS name, SUM(quantity) AS quantity, SUM(line_total_cents) AS revenue_cents
-             FROM sale_items si JOIN sales s ON s.id = si.sale_id
-             WHERE s.status = 'completed' AND date(s.created_at, 'localtime') BETWEEN :from_date AND :to_date
-             GROUP BY product_id, product_name_snapshot ORDER BY quantity DESC, revenue_cents DESC LIMIT 10"
-        );
-        $best->execute(['from_date' => $from, 'to_date' => $to]);
-        $inventoryValue = (int) (new ProductRepository($this->pdo))->summary()['inventory_value_cents'];
+        $report = (new BusinessStatisticsService($this->pdo))->reportSummary($from, $to);
+        $report['inventory_value_cents'] = $report['inventory']['inventory_value_cents'];
+        $report['movements'] = $this->movements(['from' => $from, 'to' => $to], 100);
 
-        return [
-            'summary' => $statement->fetch(),
-            'daily' => $daily->fetchAll(),
-            'monthly' => $monthly->fetchAll(),
-            'best_sellers' => $best->fetchAll(),
-            'inventory_value_cents' => $inventoryValue,
-            'low_stock' => (new ProductRepository($this->pdo))->dashboardStockItems(100),
-            'movements' => $this->movements(['from' => $from, 'to' => $to], 100),
-        ];
+        return $report;
     }
 
     private function changeStock(int $productId, string $type, int $quantity, string $reason, ?int $userId, ?int $saleId): void
@@ -424,10 +377,32 @@ final class InventoryService
         ]);
     }
 
+    private function movementFilter(array $filters): array
+    {
+        $where = [];
+        $parameters = [];
+        if (isset($filters['product_id']) && ctype_digit((string) $filters['product_id'])) {
+            $where[] = 'm.product_id = :product_id';
+            $parameters['product_id'] = (int) $filters['product_id'];
+        }
+        if (in_array($filters['type'] ?? '', ['in', 'out', 'correction', 'sale', 'sale_return'], true)) {
+            $where[] = 'm.movement_type = :type';
+            $parameters['type'] = $filters['type'];
+        }
+        if ($this->validDate($filters['from'] ?? '')) {
+            $where[] = 'm.created_at >= :from_date';
+            $parameters['from_date'] = BusinessCalendar::startOfDayUtc($filters['from']);
+        }
+        if ($this->validDate($filters['to'] ?? '')) {
+            $where[] = 'm.created_at < :to_date';
+            $parameters['to_date'] = BusinessCalendar::startOfNextDayUtc($filters['to']);
+        }
+
+        return [$where === [] ? '' : ' WHERE ' . implode(' AND ', $where), $parameters];
+    }
+
     private function validDate(string $date): bool
     {
-        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-
-        return $parsed !== false && $parsed->format('Y-m-d') === $date;
+        return BusinessCalendar::validDate($date);
     }
 }

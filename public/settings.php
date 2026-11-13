@@ -24,13 +24,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 $name = $pdo->query("SELECT setting_value FROM settings WHERE setting_key = 'business_name'")->fetchColumn() ?: 'O meu negócio';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $error !== '' && is_string($_POST['business_name'] ?? null)) {
+    $name = $_POST['business_name'];
+}
 $activePage = 'settings.php';
 $pageTitle = 'Definições';
 $pageSubtitle = 'Configuração básica do espaço de trabalho.';
 $pageFeedback = $feedback;
 require $root . '/app/views/header.php';
 ?>
-<?php if ($error !== ''): ?><div class="feedback feedback--error" role="alert"><?= e($error) ?></div><?php endif; ?>
+<?php if ($error !== ''): ?><div class="feedback feedback--error" id="settings-error" role="alert"><?= e($error) ?></div><?php endif; ?>
 <section class="panel product-form-panel"><div class="panel-heading"><div><h2>Negócio</h2><p>As alterações são guardadas na base de dados local.</p></div></div>
-<form class="product-form" method="post"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><div class="field"><label for="business_name">Nome do negócio</label><input id="business_name" name="business_name" maxlength="120" required value="<?= e($name) ?>"></div><div class="form-actions"><button class="button button--primary" type="submit">Guardar</button></div></form></section>
+<form class="product-form" method="post"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><div class="field"><label for="business_name">Nome do negócio <span aria-hidden="true">*</span></label><input id="business_name" name="business_name" maxlength="120" required value="<?= e($name) ?>"<?= $error !== '' ? ' aria-invalid="true" aria-describedby="settings-error"' : '' ?>></div><div class="form-actions"><button class="button button--primary" type="submit">Guardar definições</button></div></form></section>
 <?php require $root . '/app/views/footer.php'; ?>

@@ -7,6 +7,17 @@ $pdo = Database::connect();
 $service = new InventoryService($pdo);
 $error = '';
 $feedback = takeFlash();
+$submittedClientId = is_string($_POST['client_id'] ?? null) ? $_POST['client_id'] : '';
+$submittedSaleLines = [];
+if (is_array($_POST['product_id'] ?? null)) {
+    foreach ($_POST['product_id'] as $index => $productId) {
+        $quantity = is_array($_POST['quantity'] ?? null) ? ($_POST['quantity'][$index] ?? '') : '';
+        $submittedSaleLines[] = [
+            'product_id' => is_string($productId) ? $productId : '',
+            'quantity' => is_string($quantity) ? $quantity : '',
+        ];
+    }
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
         http_response_code(400);
@@ -39,6 +50,8 @@ $status = is_string($_GET['status'] ?? null) && in_array($_GET['status'], ['comp
 $page = min(100000, validRecordId($_GET['page'] ?? null) ?? 1);
 $pageSize = 25;
 $salesCount = $service->salesCount($search, $from, $to, $status);
+$totalPages = max(1, (int) ceil($salesCount / $pageSize));
+$page = min($page, $totalPages);
 $sales = $service->sales($search, $from, $to, $pageSize, $status, ($page - 1) * $pageSize);
 $products = $pdo->query('SELECT id, name, sku, price_cents, quantity FROM products WHERE quantity > 0 ORDER BY name COLLATE NOCASE')->fetchAll();
 $clients = $pdo->query('SELECT id, name FROM clients ORDER BY name COLLATE NOCASE')->fetchAll();
@@ -57,16 +70,28 @@ require $root . '/app/views/header.php';
 <section class="panel product-form-panel" id="new-sale"><div class="panel-heading"><div><h2>Nova venda</h2><p>O total e o stock são calculados e verificados no servidor.</p></div></div>
     <?php if ($products === []): ?><div class="empty-state"><p>Não há produtos com stock disponível para vender.</p><a class="button button--primary" href="products.php?action=create">Adicionar produto</a></div>
     <?php else: ?><form class="product-form sale-form" method="post"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="create">
-        <div class="field"><label for="client_id">Cliente</label><select id="client_id" name="client_id"><option value="">Cliente ocasional</option><?php foreach ($clients as $client): ?><option value="<?= (int) $client['id'] ?>"><?= e($client['name']) ?></option><?php endforeach; ?></select></div>
-        <div class="sale-lines" data-products="<?= e(json_encode($productOptions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT)) ?>"></div>
-        <button class="button button--secondary add-sale-line" type="button">Adicionar produto</button>
-        <div class="sale-total">Total: <strong data-sale-total>0,00 €</strong></div>
+        <div class="field"><label for="client_id">Cliente</label><select id="client_id" name="client_id"><option value="">Cliente ocasional</option><?php foreach ($clients as $client): ?><option value="<?= (int) $client['id'] ?>"<?= (string) $client['id'] === $submittedClientId ? ' selected' : '' ?>><?= e($client['name']) ?></option><?php endforeach; ?></select></div>
+        <?php $formLines = $submittedSaleLines !== [] ? $submittedSaleLines : [['product_id' => '', 'quantity' => '1']]; ?>
+        <div class="sale-lines" data-products="<?= e(json_encode($productOptions, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT)) ?>">
+            <?php foreach ($formLines as $lineIndex => $formLine): ?>
+                <?php $selectedProductAvailable = false; foreach ($products as $product) { if ((string) $product['id'] === $formLine['product_id']) { $selectedProductAvailable = true; break; } } ?>
+                <div class="sale-line">
+                    <div class="field"><label for="sale-product-<?= (int) $lineIndex ?>">Produto</label><select id="sale-product-<?= (int) $lineIndex ?>" name="product_id[]" required><option value="">Selecionar produto</option><?php if ($formLine['product_id'] !== '' && !$selectedProductAvailable): ?><option value="<?= e($formLine['product_id']) ?>" selected disabled>Produto indisponível</option><?php endif; ?><?php foreach ($products as $product): ?><option value="<?= (int) $product['id'] ?>"<?= (string) $product['id'] === $formLine['product_id'] ? ' selected' : '' ?>><?= e($product['name'] . ' · ' . $product['sku'] . ' · ' . $product['quantity'] . ' un. · ' . formatPrice((int) $product['price_cents'])) ?></option><?php endforeach; ?></select></div>
+                    <div class="field"><label for="sale-quantity-<?= (int) $lineIndex ?>">Quantidade</label><input id="sale-quantity-<?= (int) $lineIndex ?>" name="quantity[]" type="number" min="1" step="1" value="<?= e($formLine['quantity']) ?>" required></div>
+                    <div class="sale-line-meta"><span data-unit-price>Preço unitário: —</span><strong data-line-total>Subtotal: —</strong></div>
+                    <button class="button button--secondary remove-sale-line" type="button" aria-label="Remover este produto da venda" hidden>Remover</button>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <button class="button button--secondary add-sale-line" type="button" hidden>Adicionar produto</button>
+        <noscript><p class="field-help">Sem JavaScript, o registo permite um produto de cada vez; o total final é calculado pelo servidor.</p></noscript>
+        <div class="sale-total">Total: <strong data-sale-total>Calculado ao registar</strong></div>
         <div class="form-actions"><button class="button button--primary" type="submit">Registar venda</button></div>
     </form><?php endif; ?>
 </section>
-<section class="panel products-panel"><div class="panel-heading products-heading"><div><h2>Histórico de vendas</h2><p><?= count($sales) ?> registos encontrados</p></div>
-<form class="search-form" method="get"><input type="search" name="q" placeholder="N.º de venda ou cliente" value="<?= e($search) ?>"><input aria-label="Data inicial" type="date" name="from" value="<?= e($from) ?>"><input aria-label="Data final" type="date" name="to" value="<?= e($to) ?>"><select name="status" aria-label="Estado da venda"><option value="">Todos os estados</option><option value="completed"<?= $status === 'completed' ? ' selected' : '' ?>>Concluída</option><option value="cancelled"<?= $status === 'cancelled' ? ' selected' : '' ?>>Anulada</option></select><button class="button button--secondary" type="submit">Filtrar</button></form></div>
-<?php if ($sales === []): ?><div class="empty-state"><p>Ainda não existem vendas neste período.</p></div><?php else: ?><div class="table-wrap"><table><thead><tr><th>N.º VENDA</th><th>CLIENTE</th><th>DATA</th><th>TOTAL</th><th>ESTADO</th></tr></thead><tbody>
-<?php foreach ($sales as $sale): ?><tr><td><a class="table-action" href="sale.php?id=<?= (int) $sale['id'] ?>"><?= e($sale['sale_number']) ?></a></td><td><?= e($sale['client_name_snapshot']) ?></td><td><?= e(date('d/m/Y H:i', strtotime($sale['created_at']))) ?></td><td class="amount-cell"><?= e(formatPrice((int) $sale['total_cents'])) ?></td><td><?= $sale['status'] === 'completed' ? 'Concluída' : 'Anulada' ?></td></tr><?php endforeach; ?>
-</tbody></table></div><?php if ($salesCount > $pageSize): ?><nav class="pagination" aria-label="Paginação"><?php for ($pageNumber = 1; $pageNumber <= (int) ceil($salesCount / $pageSize); $pageNumber++): ?><?php $query = http_build_query(array_filter(['q' => $search, 'from' => $from, 'to' => $to, 'status' => $status, 'page' => $pageNumber], static fn($value): bool => $value !== '')); ?><a class="button <?= $page === $pageNumber ? 'button--primary' : 'button--secondary' ?>" href="sales.php?<?= e($query) ?>"><?= $pageNumber ?></a><?php endfor; ?></nav><?php endif; ?><?php endif; ?></section>
+<section class="panel products-panel"><div class="panel-heading products-heading data-panel-heading"><div><h2>Histórico de vendas</h2><p><?= $salesCount ?> <?= $salesCount === 1 ? 'venda encontrada' : 'vendas encontradas' ?></p></div></div>
+<form class="search-form filter-form filter-form--compact" method="get" role="search"><label class="visually-hidden" for="sale-search">Pesquisar por número de venda ou cliente</label><input id="sale-search" type="search" name="q" placeholder="N.º de venda ou cliente" value="<?= e($search) ?>"><label class="visually-hidden" for="sales-from">Data inicial</label><input id="sales-from" type="date" name="from" value="<?= e($from) ?>"><label class="visually-hidden" for="sales-to">Data final</label><input id="sales-to" type="date" name="to" value="<?= e($to) ?>"><select name="status" aria-label="Estado da venda"><option value="">Todos os estados</option><option value="completed"<?= $status === 'completed' ? ' selected' : '' ?>>Concluída</option><option value="cancelled"<?= $status === 'cancelled' ? ' selected' : '' ?>>Anulada</option></select><button class="button button--secondary" type="submit">Filtrar</button><?php if ($search !== '' || $from !== '' || $to !== '' || $status !== ''): ?><a class="clear-search" href="sales.php">Limpar filtros</a><?php endif; ?></form>
+<?php if ($sales === []): ?><div class="empty-state"><p><?= $salesCount === 0 ? 'Ainda não existem vendas para apresentar.' : 'Não foram encontradas vendas para os filtros selecionados.' ?></p></div><?php else: ?><div class="table-wrap"><table class="sales-table"><thead><tr><th scope="col">N.º VENDA</th><th scope="col">CLIENTE</th><th scope="col">DATA</th><th scope="col">TOTAL</th><th scope="col">ESTADO</th></tr></thead><tbody>
+<?php foreach ($sales as $sale): ?><tr><td><a class="table-action" href="sale.php?id=<?= (int) $sale['id'] ?>"><?= e($sale['sale_number']) ?></a></td><td><?= e($sale['client_name_snapshot']) ?></td><td><?= e(date('d/m/Y H:i', strtotime($sale['created_at']))) ?></td><td class="amount-cell"><?= e(formatPrice((int) $sale['total_cents'])) ?></td><td><span class="status-pill<?= $sale['status'] === 'completed' ? ' status-pill--healthy' : ' status-pill--cancelled' ?>"><?= $sale['status'] === 'completed' ? 'Concluída' : 'Anulada' ?></span></td></tr><?php endforeach; ?>
+</tbody></table></div><?php if ($salesCount > $pageSize): ?><nav class="pagination" aria-label="Paginação de vendas"><?php if ($page > 1): ?><?php $query = http_build_query(array_filter(['q' => $search, 'from' => $from, 'to' => $to, 'status' => $status, 'page' => $page - 1], static fn($value): bool => $value !== '')); ?><a class="button button--secondary" href="sales.php?<?= e($query) ?>" rel="prev">Anterior</a><?php endif; ?><span class="pagination-summary">Página <?= $page ?> de <?= $totalPages ?></span><?php if ($page < $totalPages): ?><?php $query = http_build_query(array_filter(['q' => $search, 'from' => $from, 'to' => $to, 'status' => $status, 'page' => $page + 1], static fn($value): bool => $value !== '')); ?><a class="button button--secondary" href="sales.php?<?= e($query) ?>" rel="next">Seguinte</a><?php endif; ?></nav><?php endif; ?><?php endif; ?></section>
 <?php require $root . '/app/views/footer.php'; ?>

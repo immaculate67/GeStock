@@ -169,25 +169,19 @@ final class ProductRepository
                 COALESCE(SUM(quantity), 0) AS total_quantity,
                 COALESCE(SUM(CASE WHEN quantity > 0 AND quantity <= min_stock_level THEN 1 ELSE 0 END), 0) AS low_stock,
                 COALESCE(SUM(CASE WHEN quantity = 0 THEN 1 ELSE 0 END), 0) AS out_of_stock,
-                COALESCE(SUM(CASE WHEN quantity > min_stock_level THEN 1 ELSE 0 END), 0) AS in_stock
+                COALESCE(SUM(CASE WHEN quantity > min_stock_level THEN 1 ELSE 0 END), 0) AS in_stock,
+                COALESCE(SUM(CASE WHEN min_stock_level > 0
+                    AND quantity > min_stock_level
+                    AND quantity - min_stock_level <= MAX(1, CAST((min_stock_level + 4) / 5 AS INTEGER))
+                    THEN 1 ELSE 0 END), 0) AS approaching_stock,
+                COALESCE(SUM(quantity * cost_price_cents), 0) AS inventory_value_cents,
+                COALESCE(SUM(quantity * price_cents), 0) AS potential_sales_value_cents
              FROM products'
         );
 
         $summary = $statement->fetch();
-        $inventoryValue = 0;
-        foreach ($this->pdo->query('SELECT quantity, cost_price_cents FROM products') as $product) {
-            $quantity = (int) $product['quantity'];
-            $cost = (int) $product['cost_price_cents'];
-            if ($quantity > 0 && $cost > intdiv(PHP_INT_MAX, $quantity)) {
-                throw new OverflowException('O valor do inventário excede o limite numérico suportado.');
-            }
-            $lineValue = $quantity * $cost;
-            if ($lineValue > PHP_INT_MAX - $inventoryValue) {
-                throw new OverflowException('O valor do inventário excede o limite numérico suportado.');
-            }
-            $inventoryValue += $lineValue;
-        }
-        $summary['inventory_value_cents'] = $inventoryValue;
+        $summary['inventory_value_cents'] = (int) $summary['inventory_value_cents'];
+        $summary['potential_sales_value_cents'] = (int) $summary['potential_sales_value_cents'];
 
         return $summary;
     }
@@ -207,6 +201,23 @@ final class ProductRepository
              LIMIT :limit'
         );
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        return $statement->fetchAll();
+    }
+
+    public function approachingStockItems(int $limit = 5): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id, name, sku, quantity, min_stock_level
+             FROM products
+             WHERE min_stock_level > 0
+               AND quantity > min_stock_level
+               AND quantity - min_stock_level <= MAX(1, CAST((min_stock_level + 4) / 5 AS INTEGER))
+             ORDER BY quantity - min_stock_level ASC, name COLLATE NOCASE
+             LIMIT :limit'
+        );
+        $statement->bindValue('limit', max(1, $limit), PDO::PARAM_INT);
         $statement->execute();
 
         return $statement->fetchAll();

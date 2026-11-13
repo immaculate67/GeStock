@@ -3,6 +3,17 @@ declare(strict_types=1);
 
 final class BusinessRepository
 {
+    private const FIELD_LABELS = [
+        'name' => 'nome',
+        'description' => 'descrição',
+        'contact_person' => 'pessoa de contacto',
+        'email' => 'email',
+        'phone' => 'telefone',
+        'address' => 'morada',
+        'tax_number' => 'NIF',
+        'notes' => 'notas',
+    ];
+
     private const DEFINITIONS = [
         'categories' => [
             'required' => ['name'],
@@ -25,20 +36,37 @@ final class BusinessRepository
     {
     }
 
-    public function all(string $entity, string $search = ''): array
+    public function all(string $entity, string $search = '', ?int $limit = null, int $offset = 0): array
     {
         $this->definition($entity);
         $sql = 'SELECT * FROM ' . $entity;
-        $parameters = [];
-        if ($search !== '') {
-            $sql .= ' WHERE name LIKE :search ESCAPE \'\\\' COLLATE NOCASE';
-            $parameters['search'] = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search) . '%';
-        }
+        [$where, $parameters] = $this->searchFilter($search);
+        $sql .= $where;
         $sql .= $entity === 'categories' ? ' ORDER BY name COLLATE NOCASE' : ' ORDER BY name COLLATE NOCASE, id DESC';
+        if ($limit !== null) {
+            $sql .= ' LIMIT :limit OFFSET :offset';
+        }
         $statement = $this->pdo->prepare($sql);
-        $statement->execute($parameters);
+        foreach ($parameters as $key => $value) {
+            $statement->bindValue($key, $value, PDO::PARAM_STR);
+        }
+        if ($limit !== null) {
+            $statement->bindValue('limit', max(1, min(1000, $limit)), PDO::PARAM_INT);
+            $statement->bindValue('offset', max(0, $offset), PDO::PARAM_INT);
+        }
+        $statement->execute();
 
         return $statement->fetchAll();
+    }
+
+    public function count(string $entity, string $search = ''): int
+    {
+        $this->definition($entity);
+        [$where, $parameters] = $this->searchFilter($search);
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM ' . $entity . $where);
+        $statement->execute($parameters);
+
+        return (int) $statement->fetchColumn();
     }
 
     public function find(string $entity, int $id): ?array
@@ -58,10 +86,10 @@ final class BusinessRepository
         foreach ($definition['fields'] as $field) {
             $value = trim(is_string($input[$field] ?? null) ? $input[$field] : '');
             if (in_array($field, $definition['required'], true) && $value === '') {
-                throw new InvalidArgumentException('O campo ' . $field . ' é obrigatório.');
+                throw new InvalidArgumentException('O campo ' . self::FIELD_LABELS[$field] . ' é obrigatório.');
             }
             if (mb_strlen($value) > $definition['max'][$field]) {
-                throw new InvalidArgumentException('O campo ' . $field . ' excede o limite permitido.');
+                throw new InvalidArgumentException('O campo ' . self::FIELD_LABELS[$field] . ' excede o limite permitido.');
             }
             if ($field === 'email' && $value !== '' && filter_var($value, FILTER_VALIDATE_EMAIL) === false) {
                 throw new InvalidArgumentException('Introduza um endereço de email válido.');
@@ -113,5 +141,17 @@ final class BusinessRepository
         }
 
         return self::DEFINITIONS[$entity];
+    }
+
+    private function searchFilter(string $search): array
+    {
+        if ($search === '') {
+            return ['', []];
+        }
+
+        return [
+            ' WHERE name LIKE :search ESCAPE \'\\\' COLLATE NOCASE',
+            ['search' => '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search) . '%'],
+        ];
     }
 }
