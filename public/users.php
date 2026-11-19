@@ -3,6 +3,7 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 require_once $root . '/app/bootstrap.php';
 $user = requireAdministrator();
+requireBusinessModule($user, 'users');
 $pdo = Database::connect();
 $auth = new Auth($pdo);
 $error = '';
@@ -22,7 +23,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 is_string($_POST['name'] ?? null) ? $_POST['name'] : '',
                 is_string($_POST['email'] ?? null) ? $_POST['email'] : '',
                 is_string($_POST['password'] ?? null) ? $_POST['password'] : '',
-                is_string($_POST['role'] ?? null) ? $_POST['role'] : 'employee'
+                is_string($_POST['role'] ?? null) ? $_POST['role'] : 'employee',
+                (int) $user['business_id']
             );
             setFlash('success', 'Utilizador criado com sucesso.');
             header('Location: users.php', true, 303);
@@ -36,20 +38,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($targetId === null || $targetId === (int) $user['id'] || !in_array($newRole, ['administrator', 'employee', 'customer'], true)) {
             $error = 'Não pode alterar o seu próprio perfil; selecione um perfil válido.';
         } else {
-            $target = $pdo->prepare('SELECT role, active FROM users WHERE id = :id');
-            $target->execute(['id' => $targetId]);
+            $target = $pdo->prepare('SELECT role, active FROM business_memberships WHERE user_id = :id AND business_id = :business_id');
+            $target->execute(['id' => $targetId, 'business_id' => (int) $user['business_id']]);
             $targetUser = $target->fetch();
             if ($targetUser === false) {
                 $error = 'O utilizador não existe.';
-            } elseif ($targetUser['role'] === 'administrator' && $newRole !== 'administrator' && (bool) $targetUser['active']) {
-                $count = (int) $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'administrator' AND active = 1")->fetchColumn();
+            } elseif ($targetUser['role'] === 'owner') {
+                $error = 'A propriedade do negócio não pode ser alterada nesta página.';
+            } elseif (in_array($targetUser['role'], ['owner', 'administrator'], true) && $newRole !== 'administrator' && (bool) $targetUser['active']) {
+                $countQuery = $pdo->prepare(
+                    "SELECT COUNT(*) FROM business_memberships
+                     WHERE business_id = :business_id AND role IN ('owner', 'administrator') AND active = 1"
+                );
+                $countQuery->execute(['business_id' => (int) $user['business_id']]);
+                $count = (int) $countQuery->fetchColumn();
                 if ($count <= 1) {
                     $error = 'Tem de existir pelo menos um administrador ativo.';
                 }
             }
             if ($error === '') {
-                $update = $pdo->prepare('UPDATE users SET role = :role WHERE id = :id');
-                $update->execute(['role' => $newRole, 'id' => $targetId]);
+                $update = $pdo->prepare('UPDATE business_memberships SET role = :role WHERE user_id = :id AND business_id = :business_id');
+                $update->execute(['role' => $newRole, 'id' => $targetId, 'business_id' => (int) $user['business_id']]);
                 setFlash('success', 'Perfil do utilizador atualizado.');
                 header('Location: users.php', true, 303);
                 exit;
@@ -61,16 +70,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($targetId === null || strlen($password) < 12 || strlen($password) > 4096) {
             $error = 'Selecione um utilizador e introduza uma palavra-passe com pelo menos 12 caracteres.';
         } else {
-            $update = $pdo->prepare('UPDATE users SET password_hash = :password_hash WHERE id = :id');
-            $update->execute(['password_hash' => password_hash($password, PASSWORD_DEFAULT), 'id' => $targetId]);
-            if ($update->rowCount() === 0) {
-                $exists = $pdo->prepare('SELECT 1 FROM users WHERE id = :id');
-                $exists->execute(['id' => $targetId]);
-                $error = $exists->fetchColumn() === false ? 'O utilizador não existe.' : 'A nova palavra-passe é igual à atual.';
-            } else {
+            try {
+                $auth->resetMemberPassword(
+                    $targetId,
+                    (int) $user['business_id'],
+                    (int) $user['id'],
+                    $password
+                );
                 setFlash('success', 'Palavra-passe atualizada.');
                 header('Location: users.php', true, 303);
                 exit;
+            } catch (InvalidArgumentException|DomainException $exception) {
+                $error = $exception->getMessage();
             }
         }
     } elseif (($_POST['action'] ?? '') === 'toggle') {
@@ -78,20 +89,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($targetId === null || $targetId === (int) $user['id']) {
             $error = 'Não pode desativar a sua própria conta.';
         } else {
-            $target = $pdo->prepare('SELECT role, active FROM users WHERE id = :id');
-            $target->execute(['id' => $targetId]);
+            $target = $pdo->prepare('SELECT role, active FROM business_memberships WHERE user_id = :id AND business_id = :business_id');
+            $target->execute(['id' => $targetId, 'business_id' => (int) $user['business_id']]);
             $targetUser = $target->fetch();
             if ($targetUser === false) {
                 $error = 'O utilizador não existe.';
-            } elseif ($targetUser['role'] === 'administrator' && (bool) $targetUser['active']) {
-                $count = (int) $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'administrator' AND active = 1")->fetchColumn();
+            } elseif ($targetUser['role'] === 'owner') {
+                $error = 'A conta proprietária não pode ser desativada nesta página.';
+            } elseif (in_array($targetUser['role'], ['owner', 'administrator'], true) && (bool) $targetUser['active']) {
+                $countQuery = $pdo->prepare(
+                    "SELECT COUNT(*) FROM business_memberships
+                     WHERE business_id = :business_id AND role IN ('owner', 'administrator') AND active = 1"
+                );
+                $countQuery->execute(['business_id' => (int) $user['business_id']]);
+                $count = (int) $countQuery->fetchColumn();
                 if ($count <= 1) {
                     $error = 'Tem de existir pelo menos um administrador ativo.';
                 }
             }
             if ($error === '') {
-                $update = $pdo->prepare('UPDATE users SET active = :active WHERE id = :id');
-                $update->execute(['active' => (int) !(bool) $targetUser['active'], 'id' => $targetId]);
+                $update = $pdo->prepare('UPDATE business_memberships SET active = :active WHERE user_id = :id AND business_id = :business_id');
+                $update->execute([
+                    'active' => (int) !(bool) $targetUser['active'],
+                    'id' => $targetId,
+                    'business_id' => (int) $user['business_id'],
+                ]);
                 setFlash('success', 'Estado do utilizador atualizado.');
                 header('Location: users.php', true, 303);
                 exit;
@@ -99,7 +121,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 }
-$users = $pdo->query('SELECT id, name, email, role, active, created_at FROM users ORDER BY name COLLATE NOCASE')->fetchAll();
+$usersQuery = $pdo->prepare(
+    'SELECT u.id, u.name, u.email, bm.role, bm.active, u.created_at
+     FROM users u
+     JOIN business_memberships bm ON bm.user_id = u.id
+     WHERE bm.business_id = :business_id
+     ORDER BY u.name COLLATE NOCASE'
+);
+$usersQuery->execute(['business_id' => (int) $user['business_id']]);
+$users = $usersQuery->fetchAll();
 $activePage = 'users.php';
 $pageTitle = 'Utilizadores';
 $pageSubtitle = 'Contas locais e permissões de acesso.';
@@ -118,6 +148,6 @@ require $root . '/app/views/header.php';
     </form>
 </section>
 <section class="panel products-panel"><div class="panel-heading"><div><h2>Contas existentes</h2><p><?= count($users) ?> <?= count($users) === 1 ? 'conta' : 'contas' ?></p></div></div><?php if ($users === []): ?><div class="empty-state"><p>Ainda não existem outras contas para apresentar.</p></div><?php else: ?><div class="table-wrap"><table class="users-table"><thead><tr><th scope="col">Nome</th><th scope="col">Email</th><th scope="col">Perfil</th><th scope="col">Estado</th><th scope="col"><span class="visually-hidden">Ações</span></th></tr></thead><tbody>
-<?php foreach ($users as $account): ?><?php $roleLabel = match ($account['role']) { 'administrator' => 'Administrador', 'customer' => 'Cliente', default => 'Colaborador' }; ?><tr><td><?= e($account['name']) ?><?= (int) $account['id'] === (int) $user['id'] ? ' <span class="muted-cell">(sessão atual)</span>' : '' ?></td><td><?= e($account['email']) ?></td><td><?php if ((int) $account['id'] !== (int) $user['id']): ?><form method="post" class="inline-form role-form" onsubmit="return confirm('Guardar as novas permissões deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="set-role"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><select name="role" aria-label="Perfil de <?= e($account['name']) ?>"><option value="employee"<?= $account['role'] === 'employee' ? ' selected' : '' ?>>Colaborador</option><option value="customer"<?= $account['role'] === 'customer' ? ' selected' : '' ?>>Cliente</option><option value="administrator"<?= $account['role'] === 'administrator' ? ' selected' : '' ?>>Administrador</option></select><button class="table-action" type="submit">Guardar perfil</button></form><?php else: ?><?= e($roleLabel) ?><?php endif; ?></td><td><span class="status-pill<?= (bool) $account['active'] ? ' status-pill--healthy' : ' status-pill--inactive' ?>"><?= (bool) $account['active'] ? 'Ativo' : 'Inativo' ?></span></td><td><details class="password-reset"><summary>Redefinir palavra-passe</summary><form method="post" class="inline-form" onsubmit="return confirm('Atualizar a palavra-passe deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><label class="visually-hidden" for="password-<?= (int) $account['id'] ?>">Nova palavra-passe</label><input id="password-<?= (int) $account['id'] ?>" type="password" name="password" minlength="12" maxlength="4096" required autocomplete="new-password"><button class="table-action" type="submit">Atualizar</button></form></details><?php if ((int) $account['id'] !== (int) $user['id']): ?><form method="post" class="inline-form" onsubmit="return confirm('Confirmar alteração do estado deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><button class="table-action<?= (bool) $account['active'] ? ' table-action--danger' : '' ?>" type="submit"><?= (bool) $account['active'] ? 'Desativar' : 'Ativar' ?></button></form><?php else: ?><span class="muted-cell">Sessão atual</span><?php endif; ?></td></tr><?php endforeach; ?>
+<?php foreach ($users as $account): ?><?php $roleLabel = match ($account['role']) { 'owner' => 'Proprietário', 'administrator' => 'Administrador', 'customer' => 'Cliente', default => 'Colaborador' }; ?><tr><td><?= e($account['name']) ?><?= (int) $account['id'] === (int) $user['id'] ? ' <span class="muted-cell">(sessão atual)</span>' : '' ?></td><td><?= e($account['email']) ?></td><td><?php if ((int) $account['id'] !== (int) $user['id'] && $account['role'] !== 'owner'): ?><form method="post" class="inline-form role-form" onsubmit="return confirm('Guardar as novas permissões deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="set-role"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><select name="role" aria-label="Perfil de <?= e($account['name']) ?>"><option value="employee"<?= $account['role'] === 'employee' ? ' selected' : '' ?>>Colaborador</option><option value="customer"<?= $account['role'] === 'customer' ? ' selected' : '' ?>>Cliente</option><option value="administrator"<?= $account['role'] === 'administrator' ? ' selected' : '' ?>>Administrador</option></select><button class="table-action" type="submit">Guardar perfil</button></form><?php else: ?><?= e($roleLabel) ?><?php endif; ?></td><td><span class="status-pill<?= (bool) $account['active'] ? ' status-pill--healthy' : ' status-pill--inactive' ?>"><?= (bool) $account['active'] ? 'Ativo' : 'Inativo' ?></span></td><td><details class="password-reset"><summary>Redefinir palavra-passe</summary><form method="post" class="inline-form" onsubmit="return confirm('Atualizar a palavra-passe deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><label class="visually-hidden" for="password-<?= (int) $account['id'] ?>">Nova palavra-passe</label><input id="password-<?= (int) $account['id'] ?>" type="password" name="password" minlength="12" maxlength="4096" required autocomplete="new-password"><button class="table-action" type="submit">Atualizar</button></form></details><?php if ((int) $account['id'] !== (int) $user['id'] && $account['role'] !== 'owner'): ?><form method="post" class="inline-form" onsubmit="return confirm('Confirmar alteração do estado deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><button class="table-action<?= (bool) $account['active'] ? ' table-action--danger' : '' ?>" type="submit"><?= (bool) $account['active'] ? 'Desativar' : 'Ativar' ?></button></form><?php else: ?><span class="muted-cell">Sessão atual</span><?php endif; ?></td></tr><?php endforeach; ?>
 </tbody></table></div><?php endif; ?></section>
 <?php require $root . '/app/views/footer.php'; ?>

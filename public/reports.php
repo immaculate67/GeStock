@@ -3,8 +3,9 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 require_once $root . '/app/bootstrap.php';
 $user = requireAuthentication();
+requireBusinessModule($user, 'reports');
 $pdo = Database::connect();
-$service = new InventoryService($pdo);
+$service = new InventoryService($pdo, (int) $user['business_id']);
 $from = validDateInput($_GET['from'] ?? null) ? $_GET['from'] : date('Y-m-01');
 $to = validDateInput($_GET['to'] ?? null) ? $_GET['to'] : date('Y-m-d');
 if ($from > $to) {

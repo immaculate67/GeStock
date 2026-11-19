@@ -3,8 +3,11 @@ declare(strict_types=1);
 
 final class InventoryService
 {
-    public function __construct(private readonly PDO $pdo)
+    public function __construct(private readonly PDO $pdo, private readonly int $businessId)
     {
+        if ($businessId < 1) {
+            throw new InvalidArgumentException('A empresa ativa não é válida.');
+        }
     }
 
     public function createProduct(array $product, ?int $userId = null): int
@@ -13,7 +16,7 @@ final class InventoryService
         try {
             $initialQuantity = (int) $product['quantity'];
             $product['quantity'] = 0;
-            $id = (new ProductRepository($this->pdo))->create($product);
+            $id = (new ProductRepository($this->pdo, $this->businessId))->create($product);
             if ($initialQuantity > 0) {
                 $this->changeStock($id, 'in', $initialQuantity, 'Stock inicial do produto', $userId, null);
             }
@@ -30,7 +33,7 @@ final class InventoryService
 
     public function updateProduct(int $id, array $product, ?int $userId = null): bool
     {
-        $repository = new ProductRepository($this->pdo);
+        $repository = new ProductRepository($this->pdo, $this->businessId);
         $this->pdo->beginTransaction();
         try {
             $current = $repository->find($id);
@@ -77,8 +80,8 @@ final class InventoryService
         try {
             $clientName = 'Cliente ocasional';
             if ($clientId !== null) {
-                $clientQuery = $this->pdo->prepare('SELECT name FROM clients WHERE id = :id');
-                $clientQuery->execute(['id' => $clientId]);
+                $clientQuery = $this->pdo->prepare('SELECT name FROM clients WHERE id = :id AND business_id = :business_id');
+                $clientQuery->execute(['id' => $clientId, 'business_id' => $this->businessId]);
                 $client = $clientQuery->fetch();
                 if ($client === false) {
                     throw new DomainException('O cliente selecionado não existe.');
@@ -88,8 +91,8 @@ final class InventoryService
             $products = [];
             $total = 0;
             foreach ($quantities as $productId => $quantity) {
-                $query = $this->pdo->prepare('SELECT id, name, sku, price_cents, cost_price_cents, quantity FROM products WHERE id = :id');
-                $query->execute(['id' => $productId]);
+                $query = $this->pdo->prepare('SELECT id, name, sku, price_cents, cost_price_cents, quantity FROM products WHERE id = :id AND business_id = :business_id');
+                $query->execute(['id' => $productId, 'business_id' => $this->businessId]);
                 $product = $query->fetch();
                 if ($product === false) {
                     throw new DomainException('Um produto da venda já não existe.');
@@ -110,10 +113,11 @@ final class InventoryService
 
             $saleNumber = 'GS-' . gmdate('Ymd') . '-' . strtoupper(bin2hex(random_bytes(3)));
             $sale = $this->pdo->prepare(
-                'INSERT INTO sales (sale_number, client_id, client_name_snapshot, total_cents, created_by)
-                 VALUES (:sale_number, :client_id, :client_name, :total, :user_id)'
+                'INSERT INTO sales (business_id, sale_number, client_id, client_name_snapshot, total_cents, created_by)
+                 VALUES (:business_id, :sale_number, :client_id, :client_name, :total, :user_id)'
             );
             $sale->execute([
+                'business_id' => $this->businessId,
                 'sale_number' => $saleNumber,
                 'client_id' => $clientId,
                 'client_name' => $clientName,
@@ -122,13 +126,14 @@ final class InventoryService
             ]);
             $saleId = (int) $this->pdo->lastInsertId();
             $insertItem = $this->pdo->prepare(
-                'INSERT INTO sale_items (sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents, unit_cost_cents)
-                 VALUES (:sale_id, :product_id, :name, :sku, :quantity, :price, :line_total, :unit_cost)'
+                'INSERT INTO sale_items (business_id, sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents, unit_cost_cents)
+                 VALUES (:business_id, :sale_id, :product_id, :name, :sku, :quantity, :price, :line_total, :unit_cost)'
             );
             foreach ($products as $productId => [$product, $quantity, $lineTotal]) {
                 $before = (int) $product['quantity'];
                 $this->changeStock($productId, 'sale', $quantity, 'Venda ' . $saleNumber, $userId, $saleId);
                 $insertItem->execute([
+                    'business_id' => $this->businessId,
                     'sale_id' => $saleId,
                     'product_id' => $productId,
                     'name' => $product['name'],
@@ -154,19 +159,19 @@ final class InventoryService
     {
         $this->pdo->beginTransaction();
         try {
-            $query = $this->pdo->prepare('SELECT * FROM sales WHERE id = :id');
-            $query->execute(['id' => $saleId]);
+            $query = $this->pdo->prepare('SELECT * FROM sales WHERE id = :id AND business_id = :business_id');
+            $query->execute(['id' => $saleId, 'business_id' => $this->businessId]);
             $sale = $query->fetch();
             if ($sale === false || $sale['status'] !== 'completed') {
                 throw new DomainException('A venda não existe ou já foi anulada.');
             }
-            $items = $this->pdo->prepare('SELECT product_id, quantity FROM sale_items WHERE sale_id = :id');
-            $items->execute(['id' => $saleId]);
+            $items = $this->pdo->prepare('SELECT product_id, quantity FROM sale_items WHERE sale_id = :id AND business_id = :business_id');
+            $items->execute(['id' => $saleId, 'business_id' => $this->businessId]);
             $cancel = $this->pdo->prepare(
                 'UPDATE sales SET status = \'cancelled\', cancelled_at = CURRENT_TIMESTAMP, cancelled_by = :user_id
-                 WHERE id = :id AND status = \'completed\''
+                 WHERE id = :id AND business_id = :business_id AND status = \'completed\''
             );
-            $cancel->execute(['id' => $saleId, 'user_id' => $userId]);
+            $cancel->execute(['id' => $saleId, 'business_id' => $this->businessId, 'user_id' => $userId]);
             if ($cancel->rowCount() !== 1) {
                 throw new DomainException('A venda já foi anulada.');
             }
@@ -231,7 +236,9 @@ final class InventoryService
             $where[] = 'status = :status';
             $parameters['status'] = $status;
         }
-        $sql = 'SELECT * FROM sales' . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset';
+        $where[] = 'business_id = :business_id';
+        $parameters['business_id'] = $this->businessId;
+        $sql = 'SELECT * FROM sales WHERE ' . implode(' AND ', $where) . ' ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset';
         $statement = $this->pdo->prepare($sql);
         foreach ($parameters as $key => $value) {
             $statement->bindValue($key, $value);
@@ -263,7 +270,9 @@ final class InventoryService
             $where[] = 'status = :status';
             $parameters['status'] = $status;
         }
-        $sql = 'SELECT COUNT(*) FROM sales' . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where));
+        $where[] = 'business_id = :business_id';
+        $parameters['business_id'] = $this->businessId;
+        $sql = 'SELECT COUNT(*) FROM sales WHERE ' . implode(' AND ', $where);
         $statement = $this->pdo->prepare($sql);
         $statement->execute($parameters);
 
@@ -272,14 +281,14 @@ final class InventoryService
 
     public function sale(int $id): ?array
     {
-        $statement = $this->pdo->prepare('SELECT * FROM sales WHERE id = :id');
-        $statement->execute(['id' => $id]);
+        $statement = $this->pdo->prepare('SELECT * FROM sales WHERE id = :id AND business_id = :business_id');
+        $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
         $sale = $statement->fetch();
         if ($sale === false) {
             return null;
         }
-        $items = $this->pdo->prepare('SELECT * FROM sale_items WHERE sale_id = :id ORDER BY id');
-        $items->execute(['id' => $id]);
+        $items = $this->pdo->prepare('SELECT * FROM sale_items WHERE sale_id = :id AND business_id = :business_id ORDER BY id');
+        $items->execute(['id' => $id, 'business_id' => $this->businessId]);
         $sale['items'] = $items->fetchAll();
 
         return $sale;
@@ -288,9 +297,11 @@ final class InventoryService
     public function movements(array $filters = [], int $limit = 200, int $offset = 0): array
     {
         [$where, $parameters] = $this->movementFilter($filters);
+        $where[] = 'm.business_id = :business_id';
+        $parameters['business_id'] = $this->businessId;
         $sql = 'SELECT m.*, p.name AS product_name, p.sku FROM stock_movements m
                 JOIN products p ON p.id = m.product_id' .
-            $where . ' ORDER BY m.created_at DESC, m.id DESC LIMIT :limit OFFSET :offset';
+            ' WHERE ' . implode(' AND ', $where) . ' ORDER BY m.created_at DESC, m.id DESC LIMIT :limit OFFSET :offset';
         $statement = $this->pdo->prepare($sql);
         foreach ($parameters as $key => $value) {
             $statement->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
@@ -305,7 +316,9 @@ final class InventoryService
     public function movementCount(array $filters = []): int
     {
         [$where, $parameters] = $this->movementFilter($filters);
-        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM stock_movements m' . $where);
+        $where[] = 'm.business_id = :business_id';
+        $parameters['business_id'] = $this->businessId;
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM stock_movements m WHERE ' . implode(' AND ', $where));
         $statement->execute($parameters);
 
         return (int) $statement->fetchColumn();
@@ -313,12 +326,12 @@ final class InventoryService
 
     public function dashboard(): array
     {
-        return (new BusinessStatisticsService($this->pdo))->dashboard();
+        return (new BusinessStatisticsService($this->pdo, $this->businessId))->dashboard();
     }
 
     public function reportSummary(string $from, string $to): array
     {
-        $report = (new BusinessStatisticsService($this->pdo))->reportSummary($from, $to);
+        $report = (new BusinessStatisticsService($this->pdo, $this->businessId))->reportSummary($from, $to);
         $report['inventory_value_cents'] = $report['inventory']['inventory_value_cents'];
         $report['movements'] = $this->movements(['from' => $from, 'to' => $to], 100);
 
@@ -327,8 +340,8 @@ final class InventoryService
 
     private function changeStock(int $productId, string $type, int $quantity, string $reason, ?int $userId, ?int $saleId): void
     {
-        $query = $this->pdo->prepare('SELECT quantity FROM products WHERE id = :id');
-        $query->execute(['id' => $productId]);
+        $query = $this->pdo->prepare('SELECT quantity FROM products WHERE id = :id AND business_id = :business_id');
+        $query->execute(['id' => $productId, 'business_id' => $this->businessId]);
         $found = $query->fetchColumn();
         if ($found === false) {
             throw new DomainException('O produto indicado não existe.');
@@ -355,17 +368,18 @@ final class InventoryService
         }
         $update = $this->pdo->prepare(
             'UPDATE products SET quantity = :quantity, updated_at = CURRENT_TIMESTAMP
-             WHERE id = :id AND quantity = :before'
+             WHERE id = :id AND business_id = :business_id AND quantity = :before'
         );
-        $update->execute(['quantity' => $after, 'id' => $productId, 'before' => $before]);
+        $update->execute(['quantity' => $after, 'id' => $productId, 'business_id' => $this->businessId, 'before' => $before]);
         if ($update->rowCount() !== 1) {
             throw new DomainException('O stock foi alterado entretanto. Atualize os dados e tente novamente.');
         }
         $movement = $this->pdo->prepare(
-            'INSERT INTO stock_movements (product_id, movement_type, quantity, stock_before, stock_after, reason, sale_id, created_by)
-             VALUES (:product_id, :type, :quantity, :before, :after, :reason, :sale_id, :user_id)'
+            'INSERT INTO stock_movements (business_id, product_id, movement_type, quantity, stock_before, stock_after, reason, sale_id, created_by)
+             VALUES (:business_id, :product_id, :type, :quantity, :before, :after, :reason, :sale_id, :user_id)'
         );
         $movement->execute([
+            'business_id' => $this->businessId,
             'product_id' => $productId,
             'type' => $type,
             'quantity' => $movementQuantity,
@@ -398,7 +412,7 @@ final class InventoryService
             $parameters['to_date'] = BusinessCalendar::startOfNextDayUtc($filters['to']);
         }
 
-        return [$where === [] ? '' : ' WHERE ' . implode(' AND ', $where), $parameters];
+        return [$where, $parameters];
     }
 
     private function validDate(string $date): bool

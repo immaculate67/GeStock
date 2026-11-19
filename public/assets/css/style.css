@@ -1958,3 +1958,100 @@ td {
         transition-duration: 0.01ms !important;
     }
 }
+
+.workspace-name {
+    margin: -4px 12px 18px;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.business-list {
+    display: grid;
+}
+
+.business-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 18px 22px;
+    border-top: 1px solid var(--line);
+}
+
+.business-card > div {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+}
+
+.business-card strong {
+    overflow-wrap: anywhere;
+}
+
+.business-card span:not(.status-pill) {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.category-parent-label {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.module-settings-list {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.module-settings-list legend {
+    margin-bottom: 8px;
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.module-setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+    cursor: pointer;
+}
+
+.module-setting > span {
+    display: grid;
+    gap: 4px;
+}
+
+.module-setting strong {
+    color: var(--ink);
+    font-size: 13px;
+}
+
+.module-setting small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.module-setting input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--green);
+}
+
+@media (max-width: 620px) {
+    .business-card {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 16px;
+    }

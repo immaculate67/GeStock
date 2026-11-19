@@ -5,6 +5,7 @@ require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/ProductRepository.php';
 require_once dirname(__DIR__) . '/app/ProductValidator.php';
 require_once dirname(__DIR__) . '/app/BusinessRepository.php';
+require_once dirname(__DIR__) . '/app/BusinessService.php';
 require_once dirname(__DIR__) . '/app/BusinessCalendar.php';
 require_once dirname(__DIR__) . '/app/InventoryService.php';
 require_once dirname(__DIR__) . '/app/BusinessStatisticsService.php';
@@ -18,6 +19,7 @@ if (!mkdir($testDirectory, 0700)) {
 
 $databasePath = $testDirectory . '/test.sqlite';
 $legacyDatabasePath = $testDirectory . '/legacy.sqlite';
+$failedMigrationPath = $testDirectory . '/failed-migration.sqlite';
 $passed = 0;
 
 $assert = static function (bool $condition, string $message) use (&$passed): void {
@@ -31,12 +33,32 @@ $assert = static function (bool $condition, string $message) use (&$passed): voi
 
 try {
     $pdo = Database::connect($databasePath);
-    $repository = new ProductRepository($pdo);
     $validator = new ProductValidator();
 
     $tables = $pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'products'")->fetchColumn();
     $assert($tables === 'products', 'database initialisation creates the products table');
     $assert(Database::connect($databasePath)->query('SELECT COUNT(*) FROM products')->fetchColumn() === 0, 'database initialisation is repeatable without deleting data');
+    $pdo->exec("INSERT INTO businesses (name, industry_key) VALUES ('Empresa de teste', 'custom')");
+    $businessId = (int) $pdo->lastInsertId();
+    $repository = new ProductRepository($pdo, $businessId);
+
+    $failedMigrationPdo = new PDO('sqlite:' . $failedMigrationPath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $failedMigrationPdo->exec('CREATE TABLE businesses (id INTEGER PRIMARY KEY)');
+    unset($failedMigrationPdo);
+    $migrationFailed = false;
+    try {
+        Database::connect($failedMigrationPath);
+    } catch (PDOException) {
+        $migrationFailed = true;
+    }
+    $failedMigrationPdo = new PDO('sqlite:' . $failedMigrationPath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $assert(
+        $migrationFailed
+        && (int) $failedMigrationPdo->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'business_memberships'")->fetchColumn() === 0
+        && (int) $failedMigrationPdo->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn() === 0,
+        'failed V6 schema migrations roll back all versioned DDL and leave no applied migration marker'
+    );
+    unset($failedMigrationPdo);
 
     $legacyPdo = new PDO('sqlite:' . $legacyDatabasePath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $legacyPdo->exec(
@@ -84,8 +106,9 @@ try {
     $legacyPdo->exec("INSERT INTO sale_items (id, sale_id, product_id, product_name_snapshot, sku_snapshot, quantity, unit_price_cents, line_total_cents) VALUES (1, 1, 1, 'Produto legado', 'LEGACY-1', 1, 1234, 1234)");
     unset($legacyPdo);
     $migratedPdo = Database::connect($legacyDatabasePath);
+    $legacyBusinessId = (int) $migratedPdo->query('SELECT id FROM businesses LIMIT 1')->fetchColumn();
     $legacyProduct = $migratedPdo->query("SELECT * FROM products WHERE sku = 'LEGACY-1'")->fetch();
-    $assert($legacyProduct['name'] === 'Produto legado' && $legacyProduct['cost_price_cents'] === 0, 'schema upgrade preserves existing products and adds cost data safely');
+    $assert($legacyProduct['name'] === 'Produto legado' && $legacyProduct['cost_price_cents'] === 0 && (int) $legacyProduct['business_id'] === $legacyBusinessId, 'schema upgrade preserves and assigns existing products to the legacy business');
     $legacyUser = $migratedPdo->query("SELECT name, role FROM users WHERE email = 'legacy@example.test'")->fetch();
     $legacyAuth = new Auth($migratedPdo);
     $legacyCustomerId = $legacyAuth->createUser('Cliente legado', 'customer@example.test', 'palavra-passe-forte-123', 'customer');
@@ -93,15 +116,20 @@ try {
     $legacySaleItem = $migratedPdo->query('SELECT unit_cost_cents FROM sale_items WHERE id = 1')->fetch();
     $assert($legacySaleItem['unit_cost_cents'] === null && (int) $migratedPdo->query('SELECT COUNT(*) FROM sale_items')->fetchColumn() === 1, 'historical sale items survive the additive cost snapshot migration as unknown');
     $migratedPdo->exec("UPDATE sales SET created_at = '2026-07-01 10:00:00' WHERE id = 1");
-    $legacyProfit = (new BusinessStatisticsService($migratedPdo))->reportSummary('2026-07-01', '2026-07-01')['summary'];
+    $legacyProfit = (new BusinessStatisticsService($migratedPdo, $legacyBusinessId))->reportSummary('2026-07-01', '2026-07-01')['summary'];
     $assert($legacyProfit['known_cost_lines'] === 0 && $legacyProfit['gross_profit_cents'] === 0, 'reports do not infer missing historical costs from current product records');
     $assert($legacyAuth->authenticate('customer@example.test', 'palavra-passe-forte-123')['role'] === 'customer', 'customer accounts can authenticate after upgrading the schema');
-    $assert($migratedPdo->query('PRAGMA foreign_key_check')->fetch() === false && (int) $migratedPdo->query('SELECT user_id FROM legacy_user_refs WHERE id = 1')->fetchColumn() === 1, 'customer account migration preserves user foreign keys');
+    $assert(
+        $migratedPdo->query('PRAGMA foreign_key_check')->fetch() === false
+        && (int) $migratedPdo->query('SELECT user_id FROM legacy_user_refs WHERE id = 1')->fetchColumn() === 1
+        && (int) $migratedPdo->query('SELECT business_id FROM sale_items WHERE id = 1')->fetchColumn() === $legacyBusinessId,
+        'tenant migration preserves historical foreign keys and associates sale history with the legacy business'
+    );
     unset($migratedPdo);
 
     $emptySummary = $repository->summary();
     $assert((int) $emptySummary['total_products'] === 0 && (int) $emptySummary['low_stock'] === 0 && (int) $emptySummary['out_of_stock'] === 0, 'dashboard summary supports an empty database');
-    $emptyDashboard = (new BusinessStatisticsService($pdo))->dashboard(new DateTimeImmutable('2026-07-01 12:00:00', BusinessCalendar::timezone()));
+    $emptyDashboard = (new BusinessStatisticsService($pdo, $businessId))->dashboard(new DateTimeImmutable('2026-07-01 12:00:00', BusinessCalendar::timezone()));
     $assert($emptyDashboard['sales']['today_revenue_cents'] === 0 && $emptyDashboard['sales']['year_sales_count'] === 0 && count($emptyDashboard['revenue_trend']) === 30 && count($emptyDashboard['monthly_trend']) === 12, 'business statistics return zero totals and usable daily and monthly trends for an empty database');
     $assert($repository->dashboardStockItems() === [], 'dashboard stock list supports an empty database');
 
@@ -178,7 +206,7 @@ try {
     $assert($repository->delete($healthyId), 'additional test product can be deleted');
     $assert($repository->delete($productId) && $repository->summary()['total_products'] === 0, 'deleting all products restores the empty dashboard state');
 
-    $business = new BusinessRepository($pdo);
+    $business = new BusinessRepository($pdo, $businessId);
     $categoryId = $business->save('categories', ['name' => 'Bebidas', 'description' => 'Artigos para beber']);
     $supplierId = $business->save('suppliers', [
         'name' => 'Fornecedor Local', 'contact_person' => 'Rita Silva', 'email' => 'rita@example.test',
@@ -204,13 +232,172 @@ try {
     $business->save('categories', ['name' => 'Conservas', 'description' => '']);
     $categoryPage = $business->all('categories', '', 1, 1);
     $assert($business->count('categories') === 3 && $business->count('categories', 'Cereais') === 1 && count($categoryPage) === 1 && $categoryPage[0]['name'] === 'Cereais', 'business records support filtered counts and stable pagination');
+    $subcategoryId = $business->save('categories', [
+        'name' => 'Chás',
+        'description' => '',
+        'parent_id' => $categoryId,
+    ]);
+    $subcategory = $business->find('categories', $subcategoryId);
+    $assert((int) $subcategory['parent_id'] === $categoryId, 'categories can be nested under a same-business parent');
+    $cycleRejected = false;
+    try {
+        $business->save('categories', [
+            'name' => 'Bebidas e café',
+            'description' => 'Atualizada',
+            'parent_id' => $subcategoryId,
+        ], $categoryId);
+    } catch (InvalidArgumentException) {
+        $cycleRejected = true;
+    }
+    $assert($cycleRejected, 'category updates reject hierarchy cycles');
+    $pdo->exec("INSERT INTO businesses (name, industry_key) VALUES ('Outra empresa', 'custom')");
+    $secondBusinessId = (int) $pdo->lastInsertId();
+    $secondBusiness = new BusinessRepository($pdo, $secondBusinessId);
+    $secondCategoryId = $secondBusiness->save('categories', ['name' => 'Bebidas', 'description' => 'Outra empresa']);
+    $secondRepository = new ProductRepository($pdo, $secondBusinessId);
+    $assert(
+        $secondCategoryId !== $categoryId
+        && $secondBusiness->count('categories') === 1
+        && $secondRepository->count() === 0,
+        'business records and category names are isolated between businesses'
+    );
+    $crossBusinessParentRejected = false;
+    try {
+        $secondBusiness->save('categories', [
+            'name' => 'Categoria externa',
+            'description' => '',
+            'parent_id' => $categoryId,
+        ]);
+    } catch (InvalidArgumentException) {
+        $crossBusinessParentRejected = true;
+    }
+    $crossBusinessDatabaseReferenceRejected = false;
+    try {
+        $pdo->prepare(
+            'INSERT INTO products (
+                business_id, name, sku, price_cents, quantity, min_stock_level, category_id
+             ) VALUES (:business_id, :name, :sku, 100, 0, 0, :category_id)'
+        )->execute([
+            'business_id' => $secondBusinessId,
+            'name' => 'Referência inválida',
+            'sku' => 'CROSS-1',
+            'category_id' => $categoryId,
+        ]);
+    } catch (PDOException) {
+        $crossBusinessDatabaseReferenceRejected = true;
+    }
+    $assert(
+        $crossBusinessParentRejected && $crossBusinessDatabaseReferenceRejected,
+        'category parents and product references cannot cross business boundaries'
+    );
 
     $auth = new Auth($pdo);
     $userId = $auth->createInitialAdministrator('Admin de Teste', 'admin@example.test', 'palavra-passe-forte-123');
-    $assert($auth->authenticate('ADMIN@example.test', 'palavra-passe-forte-123')['role'] === 'administrator', 'user authentication is case-insensitive and verifies password hashes');
+    $ownerRole = $pdo->prepare('SELECT role FROM business_memberships WHERE business_id = :business_id AND user_id = :user_id');
+    $ownerRole->execute(['business_id' => $businessId, 'user_id' => $userId]);
+    $assert($ownerRole->fetchColumn() === 'owner', 'the initial administrator becomes the owner of the existing business');
+    $assert($auth->authenticate('ADMIN@example.test', 'palavra-passe-forte-123')['role'] === 'owner', 'user authentication is case-insensitive and verifies password hashes with business membership roles');
     $assert($auth->authenticate('admin@example.test', 'incorrecta') === null, 'authentication rejects an incorrect password');
+    $memberId = $auth->createUser('Colaborador Local', 'local@example.test', 'palavra-passe-forte-123', 'employee', $businessId);
+    $auth->resetMemberPassword($memberId, $businessId, $userId, 'nova-palavra-passe-segura-123');
+    $assert($auth->authenticate('local@example.test', 'nova-palavra-passe-segura-123') !== null, 'an administrator can reset a non-owner password within the active business');
+    $sharedMemberId = $auth->createUser('Colaborador Partilhado', 'shared@example.test', 'palavra-passe-forte-123', 'employee', $businessId);
+    $sharedMembership = $pdo->prepare(
+        'INSERT INTO business_memberships (business_id, user_id, role) VALUES (:business_id, :user_id, \'employee\')'
+    );
+    $sharedMembership->execute(['business_id' => $secondBusinessId, 'user_id' => $sharedMemberId]);
+    $sharedPasswordRejected = false;
+    try {
+        $auth->resetMemberPassword($sharedMemberId, $businessId, $userId, 'outra-palavra-passe-segura-123');
+    } catch (DomainException) {
+        $sharedPasswordRejected = true;
+    }
+    $assert(
+        $sharedPasswordRejected
+        && $auth->authenticate('shared@example.test', 'palavra-passe-forte-123') !== null
+        && $auth->authenticate('shared@example.test', 'outra-palavra-passe-segura-123') === null,
+        'password resets cannot alter credentials for accounts shared with another business'
+    );
+    $ownerPasswordRejected = false;
+    try {
+        $auth->resetMemberPassword($userId, $businessId, $memberId, 'tentativa-palavra-passe-segura');
+    } catch (DomainException) {
+        $ownerPasswordRejected = true;
+    }
+    $assert($ownerPasswordRejected, 'business members cannot reset the owner account password');
     $customerId = $auth->createUser('Cliente de Teste', 'customer@example.test', 'palavra-passe-forte-123', 'customer');
     $assert($customerId > 0 && $auth->authenticate('CUSTOMER@example.test', 'palavra-passe-forte-123')['role'] === 'customer', 'customer accounts can be created and authenticated separately');
+    $businessService = new BusinessService($pdo);
+    $hotelBusinessId = $businessService->create($userId, 'Hotel V6', 'hotel', $businessId);
+    $hotelBusiness = $pdo->prepare('SELECT industry_key FROM businesses WHERE id = :id');
+    $hotelBusiness->execute(['id' => $hotelBusinessId]);
+    $hotelModules = $pdo->prepare(
+        'SELECT module_key FROM business_modules WHERE business_id = :business_id AND enabled = 1'
+    );
+    $hotelModules->execute(['business_id' => $hotelBusinessId]);
+    $hotelModuleKeys = $hotelModules->fetchAll(PDO::FETCH_COLUMN);
+    $hotelMembership = $pdo->prepare(
+        'SELECT role FROM business_memberships WHERE business_id = :business_id AND user_id = :user_id'
+    );
+    $hotelMembership->execute(['business_id' => $hotelBusinessId, 'user_id' => $userId]);
+    $hotelCatalogRows = $pdo->prepare(
+        'SELECT
+            (SELECT COUNT(*) FROM products WHERE business_id = :business_id)
+            + (SELECT COUNT(*) FROM categories WHERE business_id = :business_id)
+            + (SELECT COUNT(*) FROM clients WHERE business_id = :business_id)
+            + (SELECT COUNT(*) FROM suppliers WHERE business_id = :business_id)
+            + (SELECT COUNT(*) FROM sales WHERE business_id = :business_id)
+            + (SELECT COUNT(*) FROM stock_movements WHERE business_id = :business_id)'
+    );
+    $hotelCatalogRows->execute(['business_id' => $hotelBusinessId]);
+    $assert(
+        $hotelBusiness->fetchColumn() === 'hotel'
+        && in_array('sales', $hotelModuleKeys, true)
+        && $hotelMembership->fetchColumn() === 'owner'
+        && (int) $hotelCatalogRows->fetchColumn() === 0,
+        'business creation applies an editable template without generating operational records'
+    );
+    $configuredBusinessId = $businessService->create(
+        $userId,
+        'Negócio configurado',
+        'custom',
+        $businessId,
+        ['sales', 'customers', 'sales']
+    );
+    $configuredModules = $pdo->prepare(
+        'SELECT module_key FROM business_modules WHERE business_id = :business_id AND enabled = 1 ORDER BY module_key'
+    );
+    $configuredModules->execute(['business_id' => $configuredBusinessId]);
+    $assert(
+        $configuredModules->fetchAll(PDO::FETCH_COLUMN) === ['customers', 'sales', 'settings', 'users'],
+        'business creation applies only selected modules and keeps users and settings available'
+    );
+    $businessCountBeforeInvalidModule = (int) $pdo->query('SELECT COUNT(*) FROM businesses')->fetchColumn();
+    $invalidModuleRejected = false;
+    try {
+        $businessService->create($userId, 'Módulo inválido', 'custom', $businessId, ['unknown']);
+    } catch (InvalidArgumentException) {
+        $invalidModuleRejected = true;
+    }
+    $assert(
+        $invalidModuleRejected
+        && (int) $pdo->query('SELECT COUNT(*) FROM businesses')->fetchColumn() === $businessCountBeforeInvalidModule,
+        'business creation rejects unknown modules without creating partial businesses'
+    );
+    $employeeId = $auth->createUser(
+        'Colaborador de Teste',
+        'employee@example.test',
+        'palavra-passe-forte-123',
+        'employee',
+        $businessId
+    );
+    $employeeCreateRejected = false;
+    try {
+        $businessService->create($employeeId, 'Não autorizado', 'custom', $businessId);
+    } catch (DomainException) {
+        $employeeCreateRejected = true;
+    }
+    $assert($employeeCreateRejected, 'business creation is restricted to owner and administrator memberships');
     $assert($auth->hasUsers(), 'initial administrator setup is detected after account creation');
     $secondInitialAdminRejected = false;
     try {
@@ -224,7 +411,33 @@ try {
         'name' => 'Chá verde', 'sku' => 'TEA-1', 'price_cents' => 1250, 'cost_price_cents' => 500,
         'quantity' => 10, 'min_stock_level' => 2, 'category_id' => $categoryId, 'supplier_id' => $supplierId,
     ]));
-    $service = new InventoryService($pdo);
+    $otherBusinessProductId = $secondRepository->create(array_replace($validProduct, [
+        'name' => 'Outro chá verde', 'sku' => 'TEA-1', 'quantity' => 1,
+    ]));
+    $crossTenantReferenceRejected = false;
+    try {
+        $secondRepository->create(array_replace($validProduct, [
+            'name' => 'Produto com referência externa', 'sku' => 'OTHER-1', 'category_id' => $categoryId,
+        ]));
+    } catch (DomainException) {
+        $crossTenantReferenceRejected = true;
+    }
+    $assert(
+        $otherBusinessProductId > 0
+        && $repository->find($otherBusinessProductId) === null
+        && $secondRepository->find($saleProductId) === null
+        && $crossTenantReferenceRejected,
+        'catalog reads, SKU uniqueness and references remain scoped to the owning business'
+    );
+    $secondService = new InventoryService($pdo, $secondBusinessId);
+    $crossTenantSaleRejected = false;
+    try {
+        $secondService->createSale(null, [['product_id' => $saleProductId, 'quantity' => 1]]);
+    } catch (DomainException) {
+        $crossTenantSaleRejected = true;
+    }
+    $assert($crossTenantSaleRejected && $secondService->salesCount() === 0, 'sales cannot read or consume products from another business');
+    $service = new InventoryService($pdo, $businessId);
     $managedProductId = $service->createProduct(array_replace($validProduct, [
         'name' => 'Produto com movimentos', 'sku' => 'MANAGED-1', 'quantity' => 2,
     ]), $userId);
@@ -347,7 +560,7 @@ try {
         ->execute(['created_at' => '2026-07-01 03:00:00', 'product_id' => $performanceProductA]);
 
     $fixedNow = new DateTimeImmutable('2026-07-01 12:00:00', BusinessCalendar::timezone());
-    $performanceDashboard = (new BusinessStatisticsService($pdo))->dashboard($fixedNow);
+    $performanceDashboard = (new BusinessStatisticsService($pdo, $businessId))->dashboard($fixedNow);
     $assert($performanceDashboard['sales']['today_revenue_cents'] === 5000 && $performanceDashboard['sales']['yesterday_revenue_cents'] === 4000, 'sales crossing Lisbon midnight are assigned to the correct local day');
     $assert($performanceDashboard['sales']['month_revenue_cents'] === 5000 && $performanceDashboard['sales']['previous_month_revenue_cents'] === 4000, 'sales across a local month boundary are assigned to the correct month');
     $assert($performanceDashboard['sales']['today_sales_count'] === 2 && $performanceDashboard['sales']['month_sales_count'] === 2 && $performanceDashboard['sales']['average_sale_cents'] === 2600, 'completed sale counts and the all-time average use completed sales only');
@@ -388,7 +601,7 @@ try {
     fwrite(STDOUT, "\n{$passed} checks passed.\n");
 } finally {
     unset($repository, $pdo);
-    foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $databasePath . '-journal', $legacyDatabasePath, $legacyDatabasePath . '-wal', $legacyDatabasePath . '-shm', $legacyDatabasePath . '-journal'] as $path) {
+    foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $databasePath . '-journal', $legacyDatabasePath, $legacyDatabasePath . '-wal', $legacyDatabasePath . '-shm', $legacyDatabasePath . '-journal', $failedMigrationPath, $failedMigrationPath . '-wal', $failedMigrationPath . '-shm', $failedMigrationPath . '-journal'] as $path) {
         if (is_file($path) && !unlink($path)) {
             fwrite(STDERR, "Warning: could not remove temporary test database file {$path}\n");
         }

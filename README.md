@@ -71,6 +71,9 @@ GESTOCK_DB_PATH=/tmp/gestock-dev.sqlite php -S 0.0.0.0:8000 -t public
   histórico de movimentos; exportação de vendas em CSV.
 - **Utilizadores e definições:** gestão de contas e configuração básica do
   negócio, disponível apenas para administradores.
+- **Negócios:** criação de espaços independentes com modelos iniciais e seleção
+  dos módulos operacionais; utilizadores e definições permanecem disponíveis
+  para gerir cada espaço.
 - **Contas de cliente:** registo público com palavra-passe segura e área de
   cliente isolada das funções internas de inventário e gestão.
 
@@ -91,7 +94,10 @@ no servidor. As palavras-passe usam `password_hash`, os formulários com
 alterações verificam CSRF, a saída é escapada e as consultas usam instruções
 preparadas. O stock é alterado por transações que mantêm os movimentos e as
 quantidades sincronizados. A base de dados fica fora da raiz pública e recebe
-permissões restritas no sistema de ficheiros.
+permissões restritas no sistema de ficheiros. As operações de gestão de
+utilizadores são limitadas ao negócio ativo. A redefinição administrativa da
+palavra-passe não altera contas proprietárias nem contas associadas a vários
+negócios; estas credenciais têm de ser geridas pelo próprio utilizador.
 
 ## Testes
 

@@ -5,8 +5,11 @@ final class BusinessStatisticsService
 {
     private readonly DateTimeZone $timezone;
 
-    public function __construct(private readonly PDO $pdo)
+    public function __construct(private readonly PDO $pdo, private readonly int $businessId)
     {
+        if ($businessId < 1) {
+            throw new InvalidArgumentException('A empresa ativa não é válida.');
+        }
         $this->timezone = BusinessCalendar::timezone();
     }
 
@@ -33,7 +36,7 @@ final class BusinessStatisticsService
         $lines = $this->lineStatistics($periods);
         $trendStart = $today->modify('-29 days');
         $trends = $this->timeSeries($trendStart, $tomorrow);
-        $products = new ProductRepository($this->pdo);
+        $products = new ProductRepository($this->pdo, $this->businessId);
         $stockItems = $products->dashboardStockItems(8);
         $approachingItems = $products->approachingStockItems(8);
 
@@ -57,9 +60,9 @@ final class BusinessStatisticsService
         $statement = $this->pdo->prepare(
             "SELECT COUNT(*) AS sales_count, COALESCE(SUM(total_cents), 0) AS revenue_cents
              FROM sales
-             WHERE status = 'completed' AND created_at >= :start AND created_at < :end"
+             WHERE business_id = :business_id AND status = 'completed' AND created_at >= :start AND created_at < :end"
         );
-        $statement->execute($range);
+        $statement->execute(['business_id' => $this->businessId] + $range);
         $lines = $this->lineTotals($range);
         $trends = $this->timeSeries(
             DateTimeImmutable::createFromFormat('!Y-m-d', $from, $this->timezone),
@@ -82,8 +85,8 @@ final class BusinessStatisticsService
             'daily' => array_values(array_filter($trends['daily'], static fn(array $day): bool => $day['sales_count'] > 0)),
             'monthly' => array_values(array_filter($trends['monthly'], static fn(array $month): bool => $month['sales_count'] > 0)),
             'best_sellers' => $this->bestSellers($range, 10),
-            'inventory' => (new ProductRepository($this->pdo))->summary(),
-            'low_stock' => (new ProductRepository($this->pdo))->dashboardStockItems(100),
+            'inventory' => (new ProductRepository($this->pdo, $this->businessId))->summary(),
+            'low_stock' => (new ProductRepository($this->pdo, $this->businessId))->dashboardStockItems(100),
         ];
     }
 
@@ -101,7 +104,8 @@ final class BusinessStatisticsService
         }
         $parts[] = "COALESCE(SUM(CASE WHEN status = 'completed' THEN total_cents ELSE 0 END), 0) AS all_time_revenue_cents";
         $parts[] = "COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS all_time_sales_count";
-        $statement = $this->pdo->prepare('SELECT ' . implode(",\n", $parts) . ' FROM sales');
+        $statement = $this->pdo->prepare('SELECT ' . implode(",\n", $parts) . '         FROM sales WHERE business_id = :business_id');
+        $parameters['business_id'] = $this->businessId;
         $statement->execute($parameters);
         $values = array_map('intval', $statement->fetch());
         $values['average_sale_cents'] = $values['all_time_sales_count'] > 0
@@ -129,8 +133,11 @@ final class BusinessStatisticsService
             $parts[] = "COALESCE(SUM(CASE WHEN {$condition} THEN 1 ELSE 0 END), 0) AS {$name}_total_sale_lines";
         }
         $statement = $this->pdo->prepare(
-            'SELECT ' . implode(",\n", $parts) . ' FROM sale_items si JOIN sales s ON s.id = si.sale_id'
+            'SELECT ' . implode(",\n", $parts) . ' FROM sale_items si
+             JOIN sales s ON s.id = si.sale_id AND s.business_id = si.business_id
+             WHERE si.business_id = :business_id'
         );
+        $parameters['business_id'] = $this->businessId;
         $statement->execute($parameters);
 
         return array_map('intval', $statement->fetch());
@@ -145,9 +152,10 @@ final class BusinessStatisticsService
                 COALESCE(SUM(CASE WHEN si.unit_cost_cents IS NOT NULL THEN 1 ELSE 0 END), 0) AS known_cost_lines,
                 COUNT(*) AS total_sale_lines
              FROM sale_items si JOIN sales s ON s.id = si.sale_id
-             WHERE s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end"
+             WHERE si.business_id = :business_id AND s.business_id = si.business_id
+               AND s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end"
         );
-        $statement->execute($range);
+        $statement->execute(['business_id' => $this->businessId] + $range);
 
         return array_map('intval', $statement->fetch());
     }
@@ -159,10 +167,10 @@ final class BusinessStatisticsService
             "SELECT strftime('%Y-%m-%d %H:00:00', created_at) AS utc_hour,
                     SUM(total_cents) AS revenue_cents, COUNT(*) AS sales_count
              FROM sales
-             WHERE status = 'completed' AND created_at >= :start AND created_at < :end
+             WHERE business_id = :business_id AND status = 'completed' AND created_at >= :start AND created_at < :end
              GROUP BY utc_hour ORDER BY utc_hour"
         );
-        $salesQuery->execute($range);
+        $salesQuery->execute(['business_id' => $this->businessId] + $range);
         $lineQuery = $this->pdo->prepare(
             "SELECT strftime('%Y-%m-%d %H:00:00', s.created_at) AS utc_hour,
                     COALESCE(SUM(CASE WHEN si.unit_cost_cents IS NOT NULL THEN si.unit_cost_cents * si.quantity ELSE 0 END), 0) AS cost_cents,
@@ -170,10 +178,11 @@ final class BusinessStatisticsService
                     COALESCE(SUM(CASE WHEN si.unit_cost_cents IS NOT NULL THEN 1 ELSE 0 END), 0) AS known_cost_lines,
                     COUNT(*) AS total_sale_lines
              FROM sale_items si JOIN sales s ON s.id = si.sale_id
-             WHERE s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end
+             WHERE si.business_id = :business_id AND s.business_id = si.business_id
+               AND s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end
              GROUP BY utc_hour ORDER BY utc_hour"
         );
-        $lineQuery->execute($range);
+        $lineQuery->execute(['business_id' => $this->businessId] + $range);
 
         $daily = [];
         $monthly = [];
@@ -258,11 +267,13 @@ final class BusinessStatisticsService
                     SUM(CASE WHEN si.unit_cost_cents IS NOT NULL THEN 1 ELSE 0 END) AS known_cost_lines,
                     COUNT(*) AS total_sale_lines
              FROM sale_items si JOIN sales s ON s.id = si.sale_id
-             WHERE s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end
+             WHERE si.business_id = :business_id AND s.business_id = si.business_id
+               AND s.status = 'completed' AND s.created_at >= :start AND s.created_at < :end
              GROUP BY si.product_id, si.product_name_snapshot, si.sku_snapshot
              ORDER BY quantity DESC, revenue_cents DESC, name COLLATE NOCASE
              LIMIT :limit"
         );
+        $statement->bindValue('business_id', $this->businessId, PDO::PARAM_INT);
         $statement->bindValue('start', $range['start']);
         $statement->bindValue('end', $range['end']);
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
@@ -276,11 +287,12 @@ final class BusinessStatisticsService
         $statement = $this->pdo->prepare(
             "SELECT client_name_snapshot AS name, COUNT(*) AS sales_count, SUM(total_cents) AS revenue_cents
              FROM sales
-             WHERE status = 'completed' AND created_at >= :start AND created_at < :end
+             WHERE business_id = :business_id AND status = 'completed' AND created_at >= :start AND created_at < :end
              GROUP BY client_id, client_name_snapshot
              ORDER BY revenue_cents DESC, sales_count DESC, name COLLATE NOCASE
              LIMIT :limit"
         );
+        $statement->bindValue('business_id', $this->businessId, PDO::PARAM_INT);
         $statement->bindValue('start', $range['start']);
         $statement->bindValue('end', $range['end']);
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
@@ -303,16 +315,19 @@ final class BusinessStatisticsService
                 COALESCE(SUM(CASE WHEN movement_type = 'correction' THEN 1 ELSE 0 END), 0) AS corrections_count,
                 COALESCE(SUM(CASE WHEN movement_type = 'correction' THEN quantity ELSE 0 END), 0) AS corrections_units
              FROM stock_movements
-             WHERE created_at >= :start AND created_at < :end"
+             WHERE business_id = :business_id AND created_at >= :start AND created_at < :end"
         );
-        $statement->execute($range);
+        $statement->execute(['business_id' => $this->businessId] + $range);
 
         return array_map('intval', $statement->fetch());
     }
 
     private function recentSales(): array
     {
-        return $this->pdo->query('SELECT * FROM sales ORDER BY created_at DESC, id DESC LIMIT 5')->fetchAll();
+        $statement = $this->pdo->prepare('SELECT * FROM sales WHERE business_id = :business_id ORDER BY created_at DESC, id DESC LIMIT 5');
+        $statement->execute(['business_id' => $this->businessId]);
+
+        return $statement->fetchAll();
     }
 
     private function bounds(DateTimeImmutable $start, DateTimeImmutable $end): array

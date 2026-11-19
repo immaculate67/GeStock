@@ -153,6 +153,8 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_movements_product_date ON stock_movements(product_id, created_at)');
+        require_once __DIR__ . '/DatabaseMigrations.php';
+        DatabaseMigrations::apply($pdo);
     }
 
     private static function allowCustomerAccounts(PDO $pdo): void

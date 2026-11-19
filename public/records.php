@@ -13,8 +13,13 @@ if ($entityType === '') {
     http_response_code(404);
     exit('Página não encontrada.');
 }
+requireBusinessModule($user, match ($entityType) {
+    'categories' => 'catalog',
+    'suppliers' => 'suppliers',
+    'clients' => 'customers',
+});
 $definition = $definitions[$entityType];
-$repository = new BusinessRepository(Database::connect());
+$repository = new BusinessRepository(Database::connect(), (int) $user['business_id']);
 $requestedMode = is_string($_GET['action'] ?? null) ? $_GET['action'] : 'list';
 $mode = $requestedMode === 'delete' ? 'confirm-delete' : $requestedMode;
 $id = validRecordId($_GET['id'] ?? null);
@@ -87,6 +92,7 @@ if ($mode === 'list') {
 } else {
     $rows = [];
 }
+$categoryOptions = $entityType === 'categories' ? $repository->all('categories', '', 1000) : [];
 $resultStart = $recordCount === 0 ? 0 : (($page - 1) * $pageSize) + 1;
 $resultEnd = min($page * $pageSize, $recordCount);
 $resultLabel = $recordCount === 0
@@ -111,7 +117,14 @@ require $root . '/app/views/header.php';
                 <?php foreach ($definition['fields'] as $field => $label): ?>
                     <div class="field<?= in_array($field, ['address', 'notes', 'description'], true) ? ' field--wide' : '' ?>">
                         <label for="<?= e($field) ?>"><?= e($label) ?><?= $field === 'name' ? ' *' : '' ?></label>
-                        <?php if (in_array($field, ['address', 'notes', 'description'], true)): ?>
+                        <?php if ($entityType === 'categories' && $field === 'parent_id'): ?>
+                            <select id="<?= e($field) ?>" name="<?= e($field) ?>">
+                                <option value="">Categoria principal</option>
+                                <?php foreach ($categoryOptions as $categoryOption): if ((int) ($record['id'] ?? 0) === (int) $categoryOption['id']) { continue; } ?>
+                                    <option value="<?= (int) $categoryOption['id'] ?>"<?= (string) $categoryOption['id'] === (string) ($values[$field] ?? '') ? ' selected' : '' ?>><?= e(($categoryOption['parent_name'] ? $categoryOption['parent_name'] . ' / ' : '') . $categoryOption['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (in_array($field, ['address', 'notes', 'description'], true)): ?>
                             <textarea id="<?= e($field) ?>" name="<?= e($field) ?>" rows="3" maxlength="<?= $fieldMaxLengths[$field] ?>"><?= e($values[$field] ?? '') ?></textarea>
                         <?php else: ?>
                             <input id="<?= e($field) ?>" name="<?= e($field) ?>" type="<?= $field === 'email' ? 'email' : ($field === 'phone' ? 'tel' : 'text') ?>" maxlength="<?= $fieldMaxLengths[$field] ?>" value="<?= e($values[$field] ?? '') ?>"<?= $field === 'name' ? ' required' : '' ?>>
@@ -124,7 +137,7 @@ require $root . '/app/views/header.php';
     </section>
 <?php elseif ($mode === 'view' && $record !== null): ?>
     <section class="panel detail-panel"><div class="panel-heading"><h2><?= e($record['name']) ?></h2><a class="table-action" href="<?= e($activePage) ?>?action=edit&amp;id=<?= (int) $record['id'] ?>">Editar</a></div>
-        <dl class="detail-grid"><?php foreach ($definition['fields'] as $field => $label): ?><div><dt><?= e($label) ?></dt><dd><?= nl2br(e($record[$field] ?? '—')) ?></dd></div><?php endforeach; ?></dl>
+        <dl class="detail-grid"><?php foreach ($definition['fields'] as $field => $label): ?><div><dt><?= e($label) ?></dt><dd><?= nl2br(e($field === 'parent_id' ? ($record['parent_name'] ?? 'Categoria principal') : ($record[$field] ?? '—'))) ?></dd></div><?php endforeach; ?></dl>
     </section>
 <?php elseif ($mode === 'confirm-delete' && $record !== null): ?>
     <section class="panel confirmation-panel" aria-labelledby="delete-title">
@@ -141,7 +154,7 @@ require $root . '/app/views/header.php';
         <form class="search-form filter-form filter-form--compact" method="get" role="search"><label class="visually-hidden" for="record-search">Pesquisar <?= e(strtolower($definition['title'])) ?></label><input id="record-search" type="search" name="q" value="<?= e($search) ?>" placeholder="Pesquisar"><button class="button button--secondary" type="submit">Pesquisar</button><?php if ($search !== ''): ?><a class="clear-search" href="<?= e($activePage) ?>">Limpar pesquisa</a><?php endif; ?></form>
         <?php if ($rows === []): ?><div class="empty-state"><p><?= $search !== '' ? 'Não foram encontrados registos para esta pesquisa.' : 'Ainda não existem registos para apresentar.' ?></p><a class="button button--primary" href="<?= e($activePage) ?>?action=create">Adicionar primeiro registo</a></div>
         <?php else: ?><div class="table-wrap"><table><thead><tr><th scope="col">Nome</th><?php if ($entityType !== 'categories'): ?><th scope="col">Email</th><th scope="col">Telefone</th><?php endif; ?><th scope="col"><span class="visually-hidden">Ações</span></th></tr></thead><tbody>
-            <?php foreach ($rows as $row): ?><tr><td class="product-name-cell"><strong><?= e($row['name']) ?></strong></td><?php if ($entityType !== 'categories'): ?><td><?= e($row['email'] ?? '—') ?></td><td><?= e($row['phone'] ?? '—') ?></td><?php endif; ?><td class="product-actions">
+            <?php foreach ($rows as $row): ?><tr><td class="product-name-cell"><strong><?= e($row['name']) ?></strong><?php if ($entityType === 'categories' && !empty($row['parent_name'])): ?><small class="category-parent-label"><?= e($row['parent_name']) ?></small><?php endif; ?></td><?php if ($entityType !== 'categories'): ?><td><?= e($row['email'] ?? '—') ?></td><td><?= e($row['phone'] ?? '—') ?></td><?php endif; ?><td class="product-actions">
                 <a class="table-action" href="<?= e($activePage) ?>?action=view&amp;id=<?= (int) $row['id'] ?>">Ver<span class="visually-hidden"> <?= e($row['name']) ?></span></a>
                 <a class="table-action" href="<?= e($activePage) ?>?action=edit&amp;id=<?= (int) $row['id'] ?>">Editar<span class="visually-hidden"> <?= e($row['name']) ?></span></a>
                 <a class="table-action table-action--danger" href="<?= e($activePage) ?>?action=delete&amp;id=<?= (int) $row['id'] ?>">Eliminar<span class="visually-hidden"> <?= e($row['name']) ?></span></a>

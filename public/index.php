@@ -9,7 +9,7 @@ $pageSubtitle = 'Uma leitura atualizada das vendas, da rentabilidade e do invent
 $trendPeriod = ($_GET['period'] ?? '') === '12m' ? '12m' : '30d';
 $error = '';
 try {
-    $dashboard = (new InventoryService(Database::connect()))->dashboard();
+    $dashboard = (new InventoryService(Database::connect(), (int) $user['business_id']))->dashboard();
 } catch (Throwable $exception) {
     error_log('GeStock dashboard could not load data: ' . $exception->getMessage());
     $error = 'Não foi possível carregar os dados. Verifique a base de dados privada e tente novamente.';

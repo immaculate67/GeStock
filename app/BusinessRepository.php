@@ -6,6 +6,7 @@ final class BusinessRepository
     private const FIELD_LABELS = [
         'name' => 'nome',
         'description' => 'descrição',
+        'parent_id' => 'categoria superior',
         'contact_person' => 'pessoa de contacto',
         'email' => 'email',
         'phone' => 'telefone',
@@ -17,7 +18,7 @@ final class BusinessRepository
     private const DEFINITIONS = [
         'categories' => [
             'required' => ['name'],
-            'fields' => ['name', 'description'],
+            'fields' => ['name', 'description', 'parent_id'],
             'max' => ['name' => 100, 'description' => 500],
         ],
         'suppliers' => [
@@ -32,17 +33,25 @@ final class BusinessRepository
         ],
     ];
 
-    public function __construct(private readonly PDO $pdo)
+    public function __construct(private readonly PDO $pdo, private readonly int $businessId)
     {
+        if ($businessId < 1) {
+            throw new InvalidArgumentException('A empresa ativa não é válida.');
+        }
     }
 
     public function all(string $entity, string $search = '', ?int $limit = null, int $offset = 0): array
     {
         $this->definition($entity);
-        $sql = 'SELECT * FROM ' . $entity;
+        $sql = $entity === 'categories'
+            ? 'SELECT c.*, p.name AS parent_name FROM categories c LEFT JOIN categories p ON p.id = c.parent_id WHERE c.business_id = :business_id'
+            : 'SELECT * FROM ' . $entity . ' WHERE business_id = :business_id';
         [$where, $parameters] = $this->searchFilter($search);
-        $sql .= $where;
-        $sql .= $entity === 'categories' ? ' ORDER BY name COLLATE NOCASE' : ' ORDER BY name COLLATE NOCASE, id DESC';
+        $parameters['business_id'] = $this->businessId;
+        $sql .= $where === '' ? '' : ' AND ' . substr($where, 7);
+        $sql .= $entity === 'categories'
+            ? ' ORDER BY COALESCE(parent_name, \'\') COLLATE NOCASE, name COLLATE NOCASE'
+            : ' ORDER BY name COLLATE NOCASE, id DESC';
         if ($limit !== null) {
             $sql .= ' LIMIT :limit OFFSET :offset';
         }
@@ -63,7 +72,8 @@ final class BusinessRepository
     {
         $this->definition($entity);
         [$where, $parameters] = $this->searchFilter($search);
-        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM ' . $entity . $where);
+        $parameters['business_id'] = $this->businessId;
+        $statement = $this->pdo->prepare('SELECT COUNT(*) FROM ' . $entity . ' WHERE business_id = :business_id' . ($where === '' ? '' : ' AND ' . substr($where, 7)));
         $statement->execute($parameters);
 
         return (int) $statement->fetchColumn();
@@ -72,8 +82,8 @@ final class BusinessRepository
     public function find(string $entity, int $id): ?array
     {
         $this->definition($entity);
-        $statement = $this->pdo->prepare('SELECT * FROM ' . $entity . ' WHERE id = :id');
-        $statement->execute(['id' => $id]);
+        $statement = $this->pdo->prepare('SELECT * FROM ' . $entity . ' WHERE id = :id AND business_id = :business_id');
+        $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
         $row = $statement->fetch();
 
         return $row === false ? null : $row;
@@ -84,6 +94,43 @@ final class BusinessRepository
         $definition = $this->definition($entity);
         $values = [];
         foreach ($definition['fields'] as $field) {
+            if ($field === 'parent_id') {
+                $rawParentId = $input[$field] ?? '';
+                if ($rawParentId === '' || $rawParentId === null) {
+                    $values[$field] = null;
+                    continue;
+                }
+                if ((!is_int($rawParentId) && (!is_string($rawParentId) || preg_match('/\A[1-9][0-9]*\z/', $rawParentId) !== 1))
+                    || filter_var($rawParentId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false) {
+                    throw new InvalidArgumentException('Selecione uma categoria superior válida.');
+                }
+                $parentId = (int) $rawParentId;
+                if ($id === $parentId || $this->find('categories', $parentId) === null) {
+                    throw new InvalidArgumentException('Selecione uma categoria superior do mesmo negócio.');
+                }
+                if ($id !== null) {
+                    $descendants = $this->pdo->prepare(
+                        'WITH RECURSIVE descendants(id) AS (
+                            SELECT id FROM categories WHERE parent_id = :category_id AND business_id = :business_id
+                            UNION ALL
+                            SELECT child.id FROM categories child
+                            JOIN descendants parent ON child.parent_id = parent.id
+                            WHERE child.business_id = :business_id
+                        )
+                        SELECT 1 FROM descendants WHERE id = :parent_id LIMIT 1'
+                    );
+                    $descendants->execute([
+                        'category_id' => $id,
+                        'business_id' => $this->businessId,
+                        'parent_id' => $parentId,
+                    ]);
+                    if ($descendants->fetchColumn() !== false) {
+                        throw new InvalidArgumentException('A categoria superior selecionada criaria um ciclo.');
+                    }
+                }
+                $values[$field] = $parentId;
+                continue;
+            }
             $value = trim(is_string($input[$field] ?? null) ? $input[$field] : '');
             if (in_array($field, $definition['required'], true) && $value === '') {
                 throw new InvalidArgumentException('O campo ' . self::FIELD_LABELS[$field] . ' é obrigatório.');
@@ -100,6 +147,9 @@ final class BusinessRepository
         if ($id === null) {
             $columns = implode(', ', array_keys($values));
             $placeholders = implode(', ', array_map(static fn(string $column): string => ':' . $column, array_keys($values)));
+            $values = ['business_id' => $this->businessId] + $values;
+            $columns = 'business_id, ' . $columns;
+            $placeholders = ':business_id, ' . $placeholders;
             $statement = $this->pdo->prepare('INSERT INTO ' . $entity . ' (' . $columns . ') VALUES (' . $placeholders . ')');
             $statement->execute($values);
 
@@ -108,7 +158,8 @@ final class BusinessRepository
 
         $values['id'] = $id;
         $sets = implode(', ', array_map(static fn(string $column): string => $column . ' = :' . $column, $definition['fields']));
-        $statement = $this->pdo->prepare('UPDATE ' . $entity . ' SET ' . $sets . ' WHERE id = :id');
+        $statement = $this->pdo->prepare('UPDATE ' . $entity . ' SET ' . $sets . ' WHERE id = :id AND business_id = :business_id');
+        $values['business_id'] = $this->businessId;
         $statement->execute($values);
         if ($statement->rowCount() === 0 && $this->find($entity, $id) === null) {
             throw new RuntimeException('O registo já não existe.');
@@ -121,14 +172,19 @@ final class BusinessRepository
     {
         $this->definition($entity);
         if ($entity === 'categories') {
-            $statement = $this->pdo->prepare('SELECT COUNT(*) FROM products WHERE category_id = :id');
-            $statement->execute(['id' => $id]);
+            $statement = $this->pdo->prepare('SELECT COUNT(*) FROM products WHERE category_id = :id AND business_id = :business_id');
+            $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
             if ((int) $statement->fetchColumn() > 0) {
                 throw new DomainException('A categoria está associada a produtos. Reatribua-os antes de a eliminar.');
             }
+            $children = $this->pdo->prepare('SELECT COUNT(*) FROM categories WHERE parent_id = :id AND business_id = :business_id');
+            $children->execute(['id' => $id, 'business_id' => $this->businessId]);
+            if ((int) $children->fetchColumn() > 0) {
+                throw new DomainException('A categoria tem subcategorias. Reatribua-as antes de a eliminar.');
+            }
         }
-        $statement = $this->pdo->prepare('DELETE FROM ' . $entity . ' WHERE id = :id');
-        $statement->execute(['id' => $id]);
+        $statement = $this->pdo->prepare('DELETE FROM ' . $entity . ' WHERE id = :id AND business_id = :business_id');
+        $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
         if ($statement->rowCount() === 0) {
             throw new RuntimeException('O registo já não existe.');
         }

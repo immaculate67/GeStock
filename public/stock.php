@@ -3,8 +3,9 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 require_once $root . '/app/bootstrap.php';
 $user = requireAuthentication();
+requireBusinessModule($user, 'inventory');
 $pdo = Database::connect();
-$service = new InventoryService($pdo);
+$service = new InventoryService($pdo, (int) $user['business_id']);
 $error = '';
 $feedback = takeFlash();
 $formValues = [
@@ -33,7 +34,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 }
-$products = $pdo->query('SELECT id, name, sku, quantity, min_stock_level FROM products ORDER BY name COLLATE NOCASE')->fetchAll();
+$productsQuery = $pdo->prepare('SELECT id, name, sku, quantity, min_stock_level FROM products WHERE business_id = :business_id ORDER BY name COLLATE NOCASE');
+$productsQuery->execute(['business_id' => (int) $user['business_id']]);
+$products = $productsQuery->fetchAll();
 $filters = [
     'product_id' => is_string($_GET['product_id'] ?? null) ? $_GET['product_id'] : '',
     'type' => is_string($_GET['type'] ?? null) && in_array($_GET['type'], ['in', 'out', 'correction', 'sale', 'sale_return'], true) ? $_GET['type'] : '',

@@ -3,14 +3,17 @@ declare(strict_types=1);
 
 final class ProductRepository
 {
-    public function __construct(private readonly PDO $pdo)
+    public function __construct(private readonly PDO $pdo, private readonly int $businessId)
     {
+        if ($businessId < 1) {
+            throw new InvalidArgumentException('A empresa ativa não é válida.');
+        }
     }
 
     public function all(string $search = '', array $filters = [], ?int $limit = null, int $offset = 0): array
     {
-        $where = [];
-        $parameters = [];
+        $where = ['p.business_id = :business_id'];
+        $parameters = ['business_id' => $this->businessId];
         if ($search !== '') {
             $escapedSearch = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search);
             $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE)";
@@ -61,25 +64,25 @@ final class ProductRepository
 
     public function count(string $search = '', array $filters = []): int
     {
-        $where = [];
-        $parameters = [];
+        $where = ['p.business_id = :business_id'];
+        $parameters = ['business_id' => $this->businessId];
         if ($search !== '') {
             $escapedSearch = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search);
-            $where[] = "(name LIKE :search ESCAPE '\\' COLLATE NOCASE OR sku LIKE :search ESCAPE '\\' COLLATE NOCASE)";
+            $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE)";
             $parameters['search'] = '%' . $escapedSearch . '%';
         }
         if (isset($filters['category_id']) && ctype_digit((string) $filters['category_id'])) {
-            $where[] = 'category_id = :category_id';
+            $where[] = 'p.category_id = :category_id';
             $parameters['category_id'] = (int) $filters['category_id'];
         }
         if (($filters['stock'] ?? '') === 'low') {
-            $where[] = 'quantity > 0 AND quantity <= min_stock_level';
+            $where[] = 'p.quantity > 0 AND p.quantity <= p.min_stock_level';
         } elseif (($filters['stock'] ?? '') === 'out') {
-            $where[] = 'quantity = 0';
+            $where[] = 'p.quantity = 0';
         } elseif (($filters['stock'] ?? '') === 'available') {
-            $where[] = 'quantity > min_stock_level';
+            $where[] = 'p.quantity > p.min_stock_level';
         }
-        $sql = 'SELECT COUNT(*) FROM products' . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where));
+        $sql = 'SELECT COUNT(*) FROM products p WHERE ' . implode(' AND ', $where);
         $statement = $this->pdo->prepare($sql);
         $statement->execute($parameters);
 
@@ -91,9 +94,10 @@ final class ProductRepository
         $statement = $this->pdo->prepare(
             'SELECT p.*, c.name AS category_name, s.name AS supplier_name FROM products p
              LEFT JOIN categories c ON c.id = p.category_id
-             LEFT JOIN suppliers s ON s.id = p.supplier_id WHERE p.id = :id'
+             LEFT JOIN suppliers s ON s.id = p.supplier_id
+             WHERE p.id = :id AND p.business_id = :business_id'
         );
-        $statement->execute(['id' => $id]);
+        $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
         $product = $statement->fetch();
 
         return $product === false ? null : $product;
@@ -101,8 +105,8 @@ final class ProductRepository
 
     public function skuExists(string $sku, ?int $exceptId = null): bool
     {
-        $sql = 'SELECT 1 FROM products WHERE sku = :sku COLLATE NOCASE';
-        $parameters = ['sku' => $sku];
+        $sql = 'SELECT 1 FROM products WHERE business_id = :business_id AND sku = :sku COLLATE NOCASE';
+        $parameters = ['business_id' => $this->businessId, 'sku' => $sku];
 
         if ($exceptId !== null) {
             $sql .= ' AND id != :id';
@@ -117,19 +121,22 @@ final class ProductRepository
 
     public function create(array $product): int
     {
+        $this->validateReferences($product);
         $statement = $this->pdo->prepare(
-            'INSERT INTO products (name, sku, description, price_cents, cost_price_cents, quantity, min_stock_level, category_id, supplier_id)
-             VALUES (:name, :sku, :description, :price_cents, :cost_price_cents, :quantity, :min_stock_level, :category_id, :supplier_id)'
+            'INSERT INTO products (business_id, name, sku, description, price_cents, cost_price_cents, quantity, min_stock_level, category_id, supplier_id)
+             VALUES (:business_id, :name, :sku, :description, :price_cents, :cost_price_cents, :quantity, :min_stock_level, :category_id, :supplier_id)'
         );
-        $statement->execute($this->completeProduct($product));
+        $statement->execute(['business_id' => $this->businessId] + $this->completeProduct($product));
 
         return (int) $this->pdo->lastInsertId();
     }
 
     public function update(int $id, array $product): bool
     {
+        $this->validateReferences($product);
         $product = $this->completeProduct($product);
         $product['id'] = $id;
+        $product['business_id'] = $this->businessId;
         $product['updated_at'] = gmdate('Y-m-d H:i:s');
         $statement = $this->pdo->prepare(
             'UPDATE products
@@ -137,7 +144,7 @@ final class ProductRepository
                  price_cents = :price_cents, cost_price_cents = :cost_price_cents,
                  category_id = :category_id, supplier_id = :supplier_id, quantity = :quantity,
                  min_stock_level = :min_stock_level, updated_at = :updated_at
-             WHERE id = :id'
+             WHERE id = :id AND business_id = :business_id'
         );
         $statement->execute($product);
 
@@ -148,15 +155,15 @@ final class ProductRepository
     {
         $history = $this->pdo->prepare(
             'SELECT
-                (SELECT COUNT(*) FROM sale_items WHERE product_id = :id)
-                + (SELECT COUNT(*) FROM stock_movements WHERE product_id = :id)'
+                (SELECT COUNT(*) FROM sale_items WHERE product_id = :id AND business_id = :business_id)
+                + (SELECT COUNT(*) FROM stock_movements WHERE product_id = :id AND business_id = :business_id)'
         );
-        $history->execute(['id' => $id]);
+        $history->execute(['id' => $id, 'business_id' => $this->businessId]);
         if ((int) $history->fetchColumn() > 0) {
             throw new DomainException('Este produto tem histórico de vendas ou stock e não pode ser eliminado.');
         }
-        $statement = $this->pdo->prepare('DELETE FROM products WHERE id = :id');
-        $statement->execute(['id' => $id]);
+        $statement = $this->pdo->prepare('DELETE FROM products WHERE id = :id AND business_id = :business_id');
+        $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
 
         return $statement->rowCount() > 0;
     }
@@ -176,8 +183,10 @@ final class ProductRepository
                     THEN 1 ELSE 0 END), 0) AS approaching_stock,
                 COALESCE(SUM(quantity * cost_price_cents), 0) AS inventory_value_cents,
                 COALESCE(SUM(quantity * price_cents), 0) AS potential_sales_value_cents
-             FROM products'
+             FROM products
+             WHERE business_id = :business_id'
         );
+        $statement->execute(['business_id' => $this->businessId]);
 
         $summary = $statement->fetch();
         $summary['inventory_value_cents'] = (int) $summary['inventory_value_cents'];
@@ -191,7 +200,7 @@ final class ProductRepository
         $statement = $this->pdo->prepare(
             'SELECT id, name, sku, quantity, min_stock_level
              FROM products
-             WHERE quantity <= min_stock_level
+             WHERE business_id = :business_id AND quantity <= min_stock_level
              ORDER BY
                 CASE WHEN quantity = 0 THEN 0
                      WHEN quantity <= min_stock_level THEN 1
@@ -200,6 +209,7 @@ final class ProductRepository
                 name COLLATE NOCASE
              LIMIT :limit'
         );
+        $statement->bindValue('business_id', $this->businessId, PDO::PARAM_INT);
         $statement->bindValue('limit', $limit, PDO::PARAM_INT);
         $statement->execute();
 
@@ -211,12 +221,13 @@ final class ProductRepository
         $statement = $this->pdo->prepare(
             'SELECT id, name, sku, quantity, min_stock_level
              FROM products
-             WHERE min_stock_level > 0
+             WHERE business_id = :business_id AND min_stock_level > 0
                AND quantity > min_stock_level
                AND quantity - min_stock_level <= MAX(1, CAST((min_stock_level + 4) / 5 AS INTEGER))
              ORDER BY quantity - min_stock_level ASC, name COLLATE NOCASE
              LIMIT :limit'
         );
+        $statement->bindValue('business_id', $this->businessId, PDO::PARAM_INT);
         $statement->bindValue('limit', max(1, $limit), PDO::PARAM_INT);
         $statement->execute();
 
@@ -225,7 +236,16 @@ final class ProductRepository
 
     public function categories(): array
     {
-        return $this->pdo->query('SELECT id, name FROM categories ORDER BY name COLLATE NOCASE')->fetchAll();
+        $statement = $this->pdo->prepare(
+            'SELECT c.id, c.name, c.parent_id, p.name AS parent_name
+             FROM categories c
+             LEFT JOIN categories p ON p.id = c.parent_id
+             WHERE c.business_id = :business_id
+             ORDER BY COALESCE(parent_name, \'\') COLLATE NOCASE, c.name COLLATE NOCASE'
+        );
+        $statement->execute(['business_id' => $this->businessId]);
+
+        return $statement->fetchAll();
     }
 
     private function completeProduct(array $product): array
@@ -235,5 +255,21 @@ final class ProductRepository
         $product['supplier_id'] = $product['supplier_id'] ?? null;
 
         return $product;
+    }
+
+    private function validateReferences(array $product): void
+    {
+        foreach (['category_id' => 'categories', 'supplier_id' => 'suppliers'] as $field => $table) {
+            if (($product[$field] ?? null) === null) {
+                continue;
+            }
+            $statement = $this->pdo->prepare(
+                'SELECT 1 FROM ' . $table . ' WHERE id = :id AND business_id = :business_id'
+            );
+            $statement->execute(['id' => $product[$field], 'business_id' => $this->businessId]);
+            if ($statement->fetchColumn() === false) {
+                throw new DomainException('A categoria ou o fornecedor selecionado não pertence à empresa ativa.');
+            }
+        }
     }
 }

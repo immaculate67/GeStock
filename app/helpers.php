@@ -82,7 +82,7 @@ function movementTypeLabel(string $type): string
 
 function requireAuthentication(): array
 {
-    return requireUserRole(['administrator', 'employee']);
+    return requireUserRole(['owner', 'administrator', 'employee']);
 }
 
 function requireCustomerAuthentication(): array
@@ -94,12 +94,14 @@ function requireUserRole(array $allowedRoles): array
 {
     $user = Auth::current();
     if ($user === null) {
-        $auth = new Auth(Database::connect());
+        $pdo = Database::connect();
+        $auth = new Auth($pdo);
         header('Location: ' . ($auth->hasUsers() ? 'login.php' : 'setup.php'), true, 303);
         exit;
     }
 
-    $statement = Database::connect()->prepare('SELECT name, email, role, active FROM users WHERE id = :id');
+    $pdo = Database::connect();
+    $statement = $pdo->prepare('SELECT name, email, role, active FROM users WHERE id = :id');
     $statement->execute(['id' => $user['id']]);
     $storedUser = $statement->fetch();
     if ($storedUser === false || !(bool) $storedUser['active']) {
@@ -107,8 +109,33 @@ function requireUserRole(array $allowedRoles): array
         header('Location: login.php', true, 303);
         exit;
     }
-    if (!in_array($storedUser['role'], $allowedRoles, true)) {
-        header('Location: ' . ($storedUser['role'] === 'customer' ? 'customer.php' : 'index.php'), true, 303);
+
+    $memberships = $pdo->prepare(
+        'SELECT bm.business_id, bm.role, b.name AS business_name
+         FROM business_memberships bm
+         JOIN businesses b ON b.id = bm.business_id
+         WHERE bm.user_id = :user_id AND bm.active = 1
+         ORDER BY bm.business_id'
+    );
+    $memberships->execute(['user_id' => $user['id']]);
+    $availableMemberships = $memberships->fetchAll();
+    $activeMembership = null;
+    $requestedBusinessId = filter_var($_SESSION['business_id'] ?? null, FILTER_VALIDATE_INT);
+    foreach ($availableMemberships as $membership) {
+        if ($requestedBusinessId !== false && $requestedBusinessId !== null && (int) $membership['business_id'] === $requestedBusinessId) {
+            $activeMembership = $membership;
+            break;
+        }
+    }
+    $activeMembership ??= $availableMemberships[0] ?? null;
+    $role = $activeMembership['role'] ?? $storedUser['role'];
+    if ($activeMembership === null && $storedUser['role'] !== 'customer') {
+        Auth::logout();
+        header('Location: login.php', true, 303);
+        exit;
+    }
+    if (!in_array($role, $allowedRoles, true)) {
+        header('Location: ' . ($role === 'customer' ? 'customer.php' : 'index.php'), true, 303);
         exit;
     }
 
@@ -116,8 +143,15 @@ function requireUserRole(array $allowedRoles): array
         'id' => (int) $user['id'],
         'name' => $storedUser['name'],
         'email' => $storedUser['email'],
-        'role' => $storedUser['role'],
+        'role' => $role,
     ];
+    if ($activeMembership !== null) {
+        $user['business_id'] = (int) $activeMembership['business_id'];
+        $user['business_name'] = $activeMembership['business_name'];
+        $_SESSION['business_id'] = $user['business_id'];
+    } else {
+        unset($_SESSION['business_id']);
+    }
     $_SESSION['user'] = $user;
 
     return $user;
@@ -126,12 +160,30 @@ function requireUserRole(array $allowedRoles): array
 function requireAdministrator(): array
 {
     $user = requireAuthentication();
-    if ($user['role'] !== 'administrator') {
+    if (!in_array($user['role'], ['owner', 'administrator'], true)) {
         http_response_code(403);
         exit('Não tem permissão para aceder a esta página.');
     }
 
     return $user;
+}
+
+function businessModuleEnabled(int $businessId, string $moduleKey): bool
+{
+    $statement = Database::connect()->prepare(
+        'SELECT enabled FROM business_modules WHERE business_id = :business_id AND module_key = :module_key'
+    );
+    $statement->execute(['business_id' => $businessId, 'module_key' => $moduleKey]);
+
+    return (bool) $statement->fetchColumn();
+}
+
+function requireBusinessModule(array $user, string $moduleKey): void
+{
+    if (!isset($user['business_id']) || !businessModuleEnabled((int) $user['business_id'], $moduleKey)) {
+        http_response_code(403);
+        exit('Este módulo não está ativo para o negócio.');
+    }
 }
 
 function validDateInput(mixed $value): bool

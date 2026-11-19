@@ -4,6 +4,7 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 require_once $root . '/app/bootstrap.php';
 $user = requireAuthentication();
+requireBusinessModule($user, 'catalog');
 
 $repository = null;
 $pageError = null;
@@ -37,7 +38,8 @@ $page = min(100000, validRecordId($_GET['page'] ?? null) ?? 1);
 $pageSize = 20;
 
 try {
-    $repository = new ProductRepository(Database::connect());
+    $businessId = (int) $user['business_id'];
+    $repository = new ProductRepository(Database::connect(), $businessId);
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $postedAction = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
@@ -73,8 +75,8 @@ try {
                     $pdo = Database::connect();
                     foreach (['category_id' => 'categories', 'supplier_id' => 'suppliers'] as $field => $table) {
                         if ($productData[$field] !== null) {
-                            $reference = $pdo->prepare('SELECT 1 FROM ' . $table . ' WHERE id = :id');
-                            $reference->execute(['id' => $productData[$field]]);
+                            $reference = $pdo->prepare('SELECT 1 FROM ' . $table . ' WHERE id = :id AND business_id = :business_id');
+                            $reference->execute(['id' => $productData[$field], 'business_id' => $businessId]);
                             if ($reference->fetchColumn() === false) {
                                 $errors[$field] = 'Selecione uma opção existente.';
                             }
@@ -83,7 +85,7 @@ try {
                 }
 
                 if ($productData !== null && $errors === []) {
-                    $inventory = new InventoryService(Database::connect());
+                    $inventory = new InventoryService(Database::connect(), $businessId);
                     if ($productId === null) {
                         $inventory->createProduct($productData, (int) $user['id']);
                         setFlash('success', 'Produto adicionado com sucesso.');
@@ -184,7 +186,9 @@ if ($repository !== null) {
     try {
         $productSummary = $repository->summary();
         $categories = $repository->categories();
-        $suppliers = Database::connect()->query('SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE')->fetchAll();
+        $supplierQuery = Database::connect()->prepare('SELECT id, name FROM suppliers WHERE business_id = :business_id ORDER BY name COLLATE NOCASE');
+        $supplierQuery->execute(['business_id' => (int) $user['business_id']]);
+        $suppliers = $supplierQuery->fetchAll();
         if ($mode === 'list') {
             $productCount = $repository->count($search, $filters);
             $totalPages = max(1, (int) ceil($productCount / $pageSize));
@@ -285,7 +289,7 @@ require $root . '/app/views/header.php';
                             </div>
                             <div class="field">
                                 <label for="category_id">Categoria</label>
-                                <select id="category_id" name="category_id"><option value="">Sem categoria</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id'] ?>"<?= (string) $category['id'] === $formValues['category_id'] ? ' selected' : '' ?>><?= e($category['name']) ?></option><?php endforeach; ?></select>
+                                <select id="category_id" name="category_id"><option value="">Sem categoria</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id'] ?>"<?= (string) $category['id'] === $formValues['category_id'] ? ' selected' : '' ?>><?= e(($category['parent_name'] ? $category['parent_name'] . ' / ' : '') . $category['name']) ?></option><?php endforeach; ?></select>
                             </div>
                             <div class="field">
                                 <label for="supplier_id">Fornecedor</label>
@@ -347,7 +351,7 @@ require $root . '/app/views/header.php';
                     <form class="search-form filter-form" method="get" action="products.php" role="search">
                         <label class="visually-hidden" for="product-search">Pesquisar por nome ou código</label>
                         <input id="product-search" type="search" name="q" placeholder="Nome ou código" value="<?= e($search) ?>">
-                        <select name="category_id" aria-label="Filtrar categoria"><option value="">Todas as categorias</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id'] ?>"<?= (string) $category['id'] === $filters['category_id'] ? ' selected' : '' ?>><?= e($category['name']) ?></option><?php endforeach; ?></select>
+                        <select name="category_id" aria-label="Filtrar categoria"><option value="">Todas as categorias</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id'] ?>"<?= (string) $category['id'] === $filters['category_id'] ? ' selected' : '' ?>><?= e(($category['parent_name'] ? $category['parent_name'] . ' / ' : '') . $category['name']) ?></option><?php endforeach; ?></select>
                         <select name="stock" aria-label="Filtrar estado de stock"><option value="">Todos os estados</option><option value="low"<?= $filters['stock'] === 'low' ? ' selected' : '' ?>>Stock baixo</option><option value="out"<?= $filters['stock'] === 'out' ? ' selected' : '' ?>>Sem stock</option><option value="available"<?= $filters['stock'] === 'available' ? ' selected' : '' ?>>Disponível</option></select>
                         <select name="sort" aria-label="Ordenar por"><option value="name"<?= $filters['sort'] === 'name' ? ' selected' : '' ?>>Nome</option><option value="sku"<?= $filters['sort'] === 'sku' ? ' selected' : '' ?>>Código</option><option value="price"<?= $filters['sort'] === 'price' ? ' selected' : '' ?>>Preço</option><option value="quantity"<?= $filters['sort'] === 'quantity' ? ' selected' : '' ?>>Stock</option><option value="created"<?= $filters['sort'] === 'created' ? ' selected' : '' ?>>Data</option></select>
                         <select name="direction" aria-label="Sentido"><option value="asc">Ascendente</option><option value="desc"<?= $filters['direction'] === 'desc' ? ' selected' : '' ?>>Descendente</option></select>

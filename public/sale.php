@@ -3,7 +3,8 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 require_once $root . '/app/bootstrap.php';
 $user = requireAuthentication();
-$service = new InventoryService(Database::connect());
+requireBusinessModule($user, 'sales');
+$service = new InventoryService(Database::connect(), (int) $user['business_id']);
 $id = validRecordId($_GET['id'] ?? null);
 $sale = $id === null ? null : $service->sale($id);
 if ($sale === null) {
