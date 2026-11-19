@@ -204,3 +204,31 @@ Not implemented or not yet verified against the complete specification:
   custom-attribute definition management are not yet exposed as dedicated
   settings screens; audit history, granular permissions, purchases and the
   industry workflows remain unfinished.
+
+### V6.5 auditoria, permissões e operações integradas
+
+- Added additive migration version 7 for append-only audit events, granular
+  membership permissions, branch access records, purchase orders and line
+  items, reusable operational records, hotel rooms/stays, event passes and
+  stock locations.
+- Added `AuditPermissionService` for permission checks, append-only audit
+  searches and branch/permission administration. Owner and administrator roles
+  retain full access; employee defaults and explicit overrides are evaluated
+  on the server.
+- Added `PurchaseService` with tenant-scoped orders, supplier and product
+  validation, cost snapshots and transactional stock receipts for base products
+  and variants.
+- Added `OperationalService` with overlap-safe hotel reservations,
+  check-in/check-out lifecycle operations, ticket pass issuance and
+  replay-prevented pass redemption.
+- Added functional Portuguese pages for auditoria, compras and operações.
+  Settings now include persisted light/dark/system appearance preferences,
+  and user administration exposes granular permission controls.
+- Verification: `php tests/run.php` passed **117 isolated checks**. PHP syntax
+  checks passed for all application and test PHP files, JavaScript syntax
+  passed, and `git diff --check` passed. No live database command was used to
+  migrate or reset `storage/gestock.sqlite`.
+- Remaining work: dedicated category bulk/archive workflows, purchase line
+  variant editing and cancellation, restaurant and manufacturing-specific
+  interfaces, central global search, branch stock-location enforcement,
+  supplier/customer purchase-history views and the final responsive UI review.

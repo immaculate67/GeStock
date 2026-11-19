@@ -10,6 +10,9 @@ final class BusinessService
         'customers' => ['title' => 'Clientes', 'description' => 'Registos e contactos de clientes.'],
         'suppliers' => ['title' => 'Fornecedores', 'description' => 'Contactos e dados de fornecedores.'],
         'reports' => ['title' => 'Relatórios', 'description' => 'Indicadores e exportação de vendas.'],
+        'purchases' => ['title' => 'Compras', 'description' => 'Encomendas, receções e custos dos fornecedores.'],
+        'operations' => ['title' => 'Operações', 'description' => 'Reservas, marcações, alugueres, passes e produção.'],
+        'audit' => ['title' => 'Auditoria', 'description' => 'Histórico append-only das alterações importantes.'],
     ];
 
     public function __construct(private readonly PDO $pdo)

@@ -1,4 +1,10 @@
 const menuToggle = document.querySelector('.menu-toggle');
+const themePreference = document.body?.dataset.theme || 'system';
+if (themePreference !== 'system') {
+    document.documentElement.dataset.theme = themePreference;
+} else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    document.documentElement.dataset.theme = 'dark';
+}
 const sidebar = document.querySelector('#sidebar');
 
 if (menuToggle && sidebar) {

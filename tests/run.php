@@ -5,6 +5,9 @@ require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/ProductRepository.php';
 require_once dirname(__DIR__) . '/app/ProductValidator.php';
 require_once dirname(__DIR__) . '/app/CatalogVariantService.php';
+require_once dirname(__DIR__) . '/app/AuditPermissionService.php';
+require_once dirname(__DIR__) . '/app/OperationalService.php';
+require_once dirname(__DIR__) . '/app/PurchaseService.php';
 require_once dirname(__DIR__) . '/app/BusinessRepository.php';
 require_once dirname(__DIR__) . '/app/BusinessService.php';
 require_once dirname(__DIR__) . '/app/BusinessConfigurationService.php';
@@ -45,11 +48,105 @@ try {
     IndustryTemplateService::apply($pdo, $businessId, 'custom');
     $repository = new ProductRepository($pdo, $businessId);
     $assert(
-        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 6
+        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 7
         && (int) $pdo->query('SELECT COUNT(*) FROM item_types WHERE business_id = ' . $businessId)->fetchColumn() === 3
         && (int) $pdo->query('SELECT COUNT(*) FROM business_branches WHERE business_id = ' . $businessId)->fetchColumn() === 1,
         'catalog architecture creates isolated item types and a default branch for each business'
     );
+    $auditPermissions = new AuditPermissionService($pdo);
+    $auditId = $auditPermissions->record($businessId, 0, 'teste', 'produto', null, null, ['nome' => 'Teste']);
+    $assert($auditId > 0 && (int) $pdo->query('SELECT COUNT(*) FROM audit_events WHERE business_id = ' . $businessId)->fetchColumn() === 1, 'append-only audit records are created inside the active business');
+    $auditUpdateRejected = false;
+    try {
+        $pdo->exec('UPDATE audit_events SET action = \'alterado\' WHERE id = ' . $auditId);
+    } catch (PDOException) {
+        $auditUpdateRejected = true;
+    }
+    $assert($auditUpdateRejected, 'audit history rejects update attempts');
+    $operational = new OperationalService($pdo, $businessId);
+    $roomId = $operational->saveRoom([
+        'room_number' => '101',
+        'room_type' => 'Duplo',
+        'status' => 'available',
+        'base_price_cents' => '85',
+        'branch_id' => null,
+    ], 0);
+    $stayId = $operational->reserveRoom([
+        'room_id' => (string) $roomId,
+        'reference' => 'ESTADIA-1',
+        'check_in_at' => '2026-12-20T15:00',
+        'check_out_at' => '2026-12-22T11:00',
+        'adults' => '2',
+        'children' => '0',
+        'total_cents' => '170',
+    ], 0);
+    $overlapRejected = false;
+    try {
+        $operational->reserveRoom([
+            'room_id' => (string) $roomId,
+            'reference' => 'ESTADIA-2',
+            'check_in_at' => '2026-12-21T15:00',
+            'check_out_at' => '2026-12-23T11:00',
+        ], 0);
+    } catch (DomainException) {
+        $overlapRejected = true;
+    }
+    $assert($stayId > 0 && $overlapRejected, 'hotel reservations prevent overlapping stays');
+    $eventId = $operational->createRecord([
+        'record_type' => 'ticket',
+        'reference' => 'EVENTO-1',
+        'title' => 'Noite de teste',
+        'status' => 'draft',
+        'quantity' => '1',
+        'total_cents' => '25',
+    ], 0);
+    $passId = $operational->issuePass($eventId, 'PASSCODE-TEST-123456789', 'Entrada geral', null, 0);
+    $operational->redeemPass('PASSCODE-TEST-123456789', 0);
+    $duplicatePassRejected = false;
+    try {
+        $operational->redeemPass('PASSCODE-TEST-123456789', 0);
+    } catch (DomainException) {
+        $duplicatePassRejected = true;
+    }
+    $assert($passId > 0 && $duplicatePassRejected, 'event passes support redemption and reject duplicate entry');
+    $supplierId = $pdo->prepare("INSERT INTO suppliers (business_id, name) VALUES (:business_id, 'Fornecedor teste') RETURNING id");
+    $supplierId->execute(['business_id' => $businessId]);
+    $supplierRecordId = (int) $supplierId->fetchColumn();
+    $supplierId->closeCursor();
+    $productTypeId = (int) $pdo->query("SELECT id FROM item_types WHERE business_id = {$businessId} AND type_key = 'product'")->fetchColumn();
+    $insertPurchaseProduct = $pdo->prepare(
+        'INSERT INTO products (business_id, item_type_id, name, sku, price_cents, cost_price_cents, quantity, min_stock_level)
+         VALUES (:business_id, :item_type_id, :name, :sku, 2500, 0, 2, 0)'
+    );
+    $insertPurchaseProduct->execute([
+        'business_id' => $businessId,
+        'item_type_id' => $productTypeId,
+        'name' => 'Produto compra',
+        'sku' => 'COMPRA-1',
+    ]);
+    $insertPurchaseProduct->closeCursor();
+    $purchaseProductId = (int) $pdo->lastInsertId();
+    $purchase = new PurchaseService($pdo, $businessId);
+    $purchaseId = $purchase->create([
+        'supplier_id' => (string) $supplierRecordId,
+        'order_number' => 'OC-1',
+        'notes' => 'Receção de teste',
+        'branch_id' => null,
+        'product_id' => [(string) $purchaseProductId],
+        'variant_id' => [''],
+        'quantity' => ['5'],
+        'unit_cost' => ['12,50'],
+    ], 0);
+    $purchase->receive($purchaseId, 0);
+    $purchaseResult = $purchase->find($purchaseId);
+    $stockAfterPurchase = (int) $pdo->query("SELECT quantity FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
+    $costAfterPurchase = (int) $pdo->query("SELECT cost_price_cents FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
+    $assert($purchaseResult['status'] === 'received' && $stockAfterPurchase === 7 && $costAfterPurchase === 1250, 'purchase orders receive stock and update the supplier cost snapshot');
+    $pdo->exec("DELETE FROM stock_movements WHERE business_id = {$businessId} AND product_id = {$purchaseProductId}");
+    $pdo->exec("DELETE FROM purchase_order_items WHERE business_id = {$businessId} AND purchase_order_id = {$purchaseId}");
+    $pdo->exec("DELETE FROM purchase_orders WHERE id = {$purchaseId} AND business_id = {$businessId}");
+    $pdo->exec("DELETE FROM products WHERE id = {$purchaseProductId} AND business_id = {$businessId}");
+    $pdo->exec("DELETE FROM suppliers WHERE id = {$supplierRecordId} AND business_id = {$businessId}");
     $configuration = new BusinessConfigurationService($pdo, $businessId);
     $branchId = $configuration->saveBranch('Loja Centro', 'CENTRO', 'Rua Principal, 1');
     $assert(

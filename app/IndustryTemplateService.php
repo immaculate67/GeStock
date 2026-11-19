@@ -146,6 +146,9 @@ final class IndustryTemplateService
             'reports' => true,
             'users' => true,
             'settings' => true,
+            'purchases' => false,
+            'operations' => false,
+            'audit' => true,
         ];
     }
 }

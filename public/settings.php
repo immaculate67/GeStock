@@ -42,6 +42,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = $exception->getMessage();
             }
         }
+    } elseif (($_POST['action'] ?? '') === 'save-appearance') {
+        $theme = is_string($_POST['theme'] ?? null) ? $_POST['theme'] : 'system';
+        if (!in_array($theme, ['light', 'dark', 'system'], true)) {
+            $error = 'O tema selecionado não é válido.';
+        } else {
+            $setting = $pdo->prepare(
+                'INSERT INTO business_settings (business_id, setting_key, setting_value)
+                 VALUES (:business_id, \'appearance_theme\', :value)
+                 ON CONFLICT(business_id, setting_key) DO UPDATE SET setting_value = excluded.setting_value'
+            );
+            $setting->execute(['business_id' => (int) $user['business_id'], 'value' => $theme]);
+            setFlash('success', 'Preferência de aparência guardada.');
+            header('Location: settings.php', true, 303);
+            exit;
+        }
     } elseif (($_POST['action'] ?? '') === 'save-modules') {
         $submittedModules = $_POST['modules'] ?? [];
         if (!is_array($submittedModules)
@@ -121,6 +136,10 @@ $modulesQuery->execute(['business_id' => (int) $user['business_id']]);
 $moduleRows = $modulesQuery->fetchAll();
 $branches = $configuration->branches();
 $itemTypes = $configuration->itemTypes();
+$themeQuery = $pdo->prepare("SELECT setting_value FROM business_settings WHERE business_id = :business_id AND setting_key = 'appearance_theme'");
+$themeQuery->execute(['business_id' => (int) $user['business_id']]);
+$theme = $themeQuery->fetchColumn();
+$theme = in_array($theme, ['light', 'dark', 'system'], true) ? (string) $theme : 'system';
 $activePage = 'settings.php';
 $pageTitle = 'Definições';
 $pageSubtitle = 'Configuração básica do espaço de trabalho.';
@@ -128,6 +147,8 @@ $pageFeedback = $feedback;
 require $root . '/app/views/header.php';
 ?>
 <?php if ($error !== ''): ?><div class="feedback feedback--error" id="settings-error" role="alert"><?= e($error) ?></div><?php endif; ?>
+<section class="panel product-form-panel"><div class="panel-heading"><div><h2>Aparência</h2><p>Escolha claro, escuro ou seguir o sistema.</p></div></div>
+<form class="product-form" method="post"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="save-appearance"><div class="field"><label for="theme">Tema</label><select id="theme" name="theme"><option value="light"<?= $theme === 'light' ? ' selected' : '' ?>>Claro</option><option value="dark"<?= $theme === 'dark' ? ' selected' : '' ?>>Escuro</option><option value="system"<?= $theme === 'system' ? ' selected' : '' ?>>Sistema</option></select></div><div class="form-actions"><button class="button button--primary" type="submit">Guardar aparência</button></div></form></section>
 <section class="panel product-form-panel"><div class="panel-heading"><div><h2>Negócio</h2><p>As alterações são guardadas na base de dados local.</p></div></div>
 <form class="product-form" method="post"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="save-business"><div class="field"><label for="business_name">Nome do negócio <span aria-hidden="true">*</span></label><input id="business_name" name="business_name" maxlength="120" required value="<?= e($name) ?>"<?= $error !== '' && ($_POST['action'] ?? '') !== 'save-modules' ? ' aria-invalid="true" aria-describedby="settings-error"' : '' ?>></div><div class="form-actions"><button class="button button--primary" type="submit">Guardar definições</button></div></form></section>
 <section class="panel product-form-panel"><div class="panel-heading"><div><h2>Módulos do negócio</h2><p>Ative apenas as áreas utilizadas. As alterações não eliminam os dados existentes.</p></div></div>

@@ -84,6 +84,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = $exception->getMessage();
             }
         }
+    } elseif (($_POST['action'] ?? '') === 'set-permissions') {
+        $targetId = validRecordId($_POST['id'] ?? null);
+        $submitted = $_POST['permissions'] ?? [];
+        if ($targetId === null || !is_array($submitted)) {
+            $error = 'A seleção de permissões não é válida.';
+        } else {
+            try {
+                $permissions = new AuditPermissionService($pdo);
+                foreach (AuditPermissionService::PERMISSIONS as $permission) {
+                    $permissions->setPermission(
+                        (int) $user['business_id'],
+                        (int) $user['id'],
+                        $targetId,
+                        $permission,
+                        in_array($permission, $submitted, true)
+                    );
+                }
+                setFlash('success', 'Permissões granulares atualizadas.');
+                header('Location: users.php', true, 303);
+                exit;
+            } catch (InvalidArgumentException|DomainException $exception) {
+                $error = $exception->getMessage();
+            }
+        }
     } elseif (($_POST['action'] ?? '') === 'toggle') {
         $targetId = validRecordId($_POST['id'] ?? null);
         if ($targetId === null || $targetId === (int) $user['id']) {
@@ -130,6 +154,7 @@ $usersQuery = $pdo->prepare(
 );
 $usersQuery->execute(['business_id' => (int) $user['business_id']]);
 $users = $usersQuery->fetchAll();
+$permissionService = new AuditPermissionService($pdo);
 $activePage = 'users.php';
 $pageTitle = 'Utilizadores';
 $pageSubtitle = 'Contas locais e permissões de acesso.';
@@ -150,4 +175,23 @@ require $root . '/app/views/header.php';
 <section class="panel products-panel"><div class="panel-heading"><div><h2>Contas existentes</h2><p><?= count($users) ?> <?= count($users) === 1 ? 'conta' : 'contas' ?></p></div></div><?php if ($users === []): ?><div class="empty-state"><p>Ainda não existem outras contas para apresentar.</p></div><?php else: ?><div class="table-wrap"><table class="users-table"><thead><tr><th scope="col">Nome</th><th scope="col">Email</th><th scope="col">Perfil</th><th scope="col">Estado</th><th scope="col"><span class="visually-hidden">Ações</span></th></tr></thead><tbody>
 <?php foreach ($users as $account): ?><?php $roleLabel = match ($account['role']) { 'owner' => 'Proprietário', 'administrator' => 'Administrador', 'customer' => 'Cliente', default => 'Colaborador' }; ?><tr><td><?= e($account['name']) ?><?= (int) $account['id'] === (int) $user['id'] ? ' <span class="muted-cell">(sessão atual)</span>' : '' ?></td><td><?= e($account['email']) ?></td><td><?php if ((int) $account['id'] !== (int) $user['id'] && $account['role'] !== 'owner'): ?><form method="post" class="inline-form role-form" onsubmit="return confirm('Guardar as novas permissões deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="set-role"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><select name="role" aria-label="Perfil de <?= e($account['name']) ?>"><option value="employee"<?= $account['role'] === 'employee' ? ' selected' : '' ?>>Colaborador</option><option value="customer"<?= $account['role'] === 'customer' ? ' selected' : '' ?>>Cliente</option><option value="administrator"<?= $account['role'] === 'administrator' ? ' selected' : '' ?>>Administrador</option></select><button class="table-action" type="submit">Guardar perfil</button></form><?php else: ?><?= e($roleLabel) ?><?php endif; ?></td><td><span class="status-pill<?= (bool) $account['active'] ? ' status-pill--healthy' : ' status-pill--inactive' ?>"><?= (bool) $account['active'] ? 'Ativo' : 'Inativo' ?></span></td><td><details class="password-reset"><summary>Redefinir palavra-passe</summary><form method="post" class="inline-form" onsubmit="return confirm('Atualizar a palavra-passe deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="reset-password"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><label class="visually-hidden" for="password-<?= (int) $account['id'] ?>">Nova palavra-passe</label><input id="password-<?= (int) $account['id'] ?>" type="password" name="password" minlength="12" maxlength="4096" required autocomplete="new-password"><button class="table-action" type="submit">Atualizar</button></form></details><?php if ((int) $account['id'] !== (int) $user['id'] && $account['role'] !== 'owner'): ?><form method="post" class="inline-form" onsubmit="return confirm('Confirmar alteração do estado deste utilizador?')"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="<?= (int) $account['id'] ?>"><button class="table-action<?= (bool) $account['active'] ? ' table-action--danger' : '' ?>" type="submit"><?= (bool) $account['active'] ? 'Desativar' : 'Ativar' ?></button></form><?php else: ?><span class="muted-cell">Sessão atual</span><?php endif; ?></td></tr><?php endforeach; ?>
 </tbody></table></div><?php endif; ?></section>
+<section class="panel product-form-panel">
+    <div class="panel-heading"><div><h2>Permissões granulares</h2><p>Configure operações permitidas a colaboradores. Proprietários e administradores mantêm acesso integral.</p></div></div>
+    <?php foreach ($users as $account): ?>
+        <?php if (in_array($account['role'], ['owner', 'administrator'], true)) continue; ?>
+        <form class="product-form" method="post">
+            <input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>">
+            <input type="hidden" name="action" value="set-permissions">
+            <input type="hidden" name="id" value="<?= (int) $account['id'] ?>">
+            <h3><?= e($account['name']) ?></h3>
+            <div class="module-settings-list">
+                <?php foreach (AuditPermissionService::PERMISSIONS as $permission): ?>
+                    <?php $granted = $permissionService->can((int) $user['business_id'], (int) $account['id'], (string) $account['role'], $permission); ?>
+                    <label class="module-setting"><span><strong><?= e($permission) ?></strong></span><input type="checkbox" name="permissions[]" value="<?= e($permission) ?>"<?= $granted ? ' checked' : '' ?>></label>
+                <?php endforeach; ?>
+            </div>
+            <div class="form-actions"><button class="button button--primary" type="submit">Guardar permissões</button></div>
+        </form>
+    <?php endforeach; ?>
+</section>
 <?php require $root . '/app/views/footer.php'; ?>

@@ -13,7 +13,7 @@ $user ??= Auth::current();
     <link rel="stylesheet" href="assets/css/style.css">
     <script src="assets/js/app.js" defer></script>
 </head>
-<body>
+<body<?php if (isset($user['business_id'])): ?> data-theme="<?= e((function (int $businessId): string { $pdo = Database::connect(); $query = $pdo->prepare("SELECT setting_value FROM business_settings WHERE business_id = :business_id AND setting_key = 'appearance_theme'"); $query->execute(['business_id' => $businessId]); $theme = $query->fetchColumn(); return in_array($theme, ['light', 'dark', 'system'], true) ? (string) $theme : 'system'; })((int) $user['business_id'])) ?>"<?php endif; ?>>
 <div class="app-shell">
     <?php require dirname(__DIR__) . '/views/sidebar.php'; ?>
     <div class="main-area">

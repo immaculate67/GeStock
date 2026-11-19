@@ -181,6 +181,215 @@ final class DatabaseMigrations
         self::applyPermissionsAuditPurchasing($pdo);
     }
 
+    private static function applyPermissionsAuditPurchasing(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 7) {
+            return;
+        }
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec(
+                'CREATE TABLE audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    actor_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    action TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 80),
+                    entity_type TEXT NOT NULL CHECK (length(entity_type) BETWEEN 1 AND 80),
+                    entity_id INTEGER NULL,
+                    before_json TEXT NULL,
+                    after_json TEXT NULL,
+                    ip_address TEXT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE membership_permissions (
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    permission_key TEXT NOT NULL CHECK (length(permission_key) BETWEEN 1 AND 80),
+                    granted INTEGER NOT NULL DEFAULT 1 CHECK (granted IN (0, 1)),
+                    updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (business_id, user_id, permission_key)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE membership_branches (
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    branch_id INTEGER NOT NULL REFERENCES business_branches(id) ON DELETE CASCADE,
+                    PRIMARY KEY (business_id, user_id, branch_id)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE purchase_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+                    order_number TEXT NOT NULL CHECK (length(order_number) BETWEEN 1 AND 80),
+                    status TEXT NOT NULL DEFAULT \'draft\' CHECK (status IN (\'draft\',\'ordered\',\'received\',\'partially_received\',\'cancelled\',\'closed\')),
+                    subtotal_cents INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_cents >= 0),
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    notes TEXT NULL CHECK (notes IS NULL OR length(notes) <= 2000),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    received_at TEXT NULL,
+                    cancelled_at TEXT NULL,
+                    UNIQUE (business_id, order_number)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE purchase_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+                    variant_id INTEGER NULL REFERENCES product_variants(id) ON DELETE RESTRICT,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    unit_cost_cents INTEGER NOT NULL CHECK (unit_cost_cents >= 0),
+                    line_total_cents INTEGER NOT NULL CHECK (line_total_cents >= 0)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE operational_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    record_type TEXT NOT NULL CHECK (record_type IN (\'reservation\',\'appointment\',\'rental\',\'membership\',\'subscription\',\'ticket\',\'production\',\'other\')),
+                    reference TEXT NOT NULL CHECK (length(reference) BETWEEN 1 AND 80),
+                    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 160),
+                    status TEXT NOT NULL DEFAULT \'draft\' CHECK (length(status) BETWEEN 1 AND 40),
+                    customer_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
+                    resource_id INTEGER NULL REFERENCES products(id) ON DELETE SET NULL,
+                    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                    starts_at TEXT NULL,
+                    ends_at TEXT NULL,
+                    deposit_cents INTEGER NOT NULL DEFAULT 0 CHECK (deposit_cents >= 0),
+                    total_cents INTEGER NOT NULL DEFAULT 0 CHECK (total_cents >= 0),
+                    metadata_json TEXT NOT NULL DEFAULT "{}",
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, record_type, reference)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE hotel_rooms (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    room_number TEXT NOT NULL CHECK (length(room_number) BETWEEN 1 AND 40),
+                    room_type TEXT NOT NULL CHECK (length(room_type) BETWEEN 1 AND 80),
+                    floor TEXT NULL,
+                    status TEXT NOT NULL DEFAULT \'available\' CHECK (status IN (\'available\',\'occupied\',\'cleaning\',\'maintenance\',\'inactive\')),
+                    base_price_cents INTEGER NOT NULL DEFAULT 0 CHECK (base_price_cents >= 0),
+                    metadata_json TEXT NOT NULL DEFAULT \'{}\' ,
+                    UNIQUE (business_id, branch_id, room_number)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE hotel_stays (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    room_id INTEGER NOT NULL REFERENCES hotel_rooms(id) ON DELETE RESTRICT,
+                    customer_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
+                    reference TEXT NOT NULL CHECK (length(reference) BETWEEN 1 AND 80),
+                    status TEXT NOT NULL DEFAULT \'reserved\' CHECK (status IN (\'reserved\',\'checked_in\',\'checked_out\',\'cancelled\',\'no_show\')),
+                    check_in_at TEXT NOT NULL,
+                    check_out_at TEXT NOT NULL,
+                    adults INTEGER NOT NULL DEFAULT 1 CHECK (adults >= 1),
+                    children INTEGER NOT NULL DEFAULT 0 CHECK (children >= 0),
+                    total_cents INTEGER NOT NULL DEFAULT 0 CHECK (total_cents >= 0),
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, reference)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE event_passes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    event_id INTEGER NOT NULL REFERENCES operational_records(id) ON DELETE RESTRICT,
+                    customer_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
+                    pass_code TEXT NOT NULL COLLATE NOCASE CHECK (length(pass_code) BETWEEN 16 AND 128),
+                    pass_type TEXT NOT NULL CHECK (length(pass_type) BETWEEN 1 AND 80),
+                    status TEXT NOT NULL DEFAULT \'issued\' CHECK (status IN (\'issued\',\'used\',\'cancelled\',\'expired\')),
+                    issued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    redeemed_at TEXT NULL,
+                    redeemed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    UNIQUE (business_id, pass_code)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE stock_locations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+                    code TEXT NOT NULL COLLATE NOCASE CHECK (length(code) BETWEEN 1 AND 40),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+                    UNIQUE (business_id, branch_id, code)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER prevent_audit_update BEFORE UPDATE ON audit_events
+                 BEGIN SELECT RAISE(ABORT, \'O histórico de auditoria não pode ser alterado.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER prevent_audit_delete BEFORE DELETE ON audit_events
+                 BEGIN SELECT RAISE(ABORT, \'O histórico de auditoria não pode ser eliminado.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_purchase_supplier_insert BEFORE INSERT ON purchase_orders
+                 WHEN NOT EXISTS (SELECT 1 FROM suppliers WHERE id = NEW.supplier_id AND business_id = NEW.business_id)
+                 BEGIN SELECT RAISE(ABORT, \'O fornecedor da compra tem de pertencer ao mesmo negócio.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_purchase_item_insert BEFORE INSERT ON purchase_order_items
+                 WHEN NOT EXISTS (
+                     SELECT 1 FROM purchase_orders po JOIN products p ON p.id = NEW.product_id
+                     WHERE po.id = NEW.purchase_order_id AND po.business_id = NEW.business_id AND p.business_id = NEW.business_id
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'Os dados da compra têm de pertencer ao mesmo negócio.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_hotel_room_insert BEFORE INSERT ON hotel_rooms
+                 WHEN NEW.branch_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM business_branches WHERE id = NEW.branch_id AND business_id = NEW.business_id
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'O local do quarto tem de pertencer ao mesmo negócio.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_hotel_stay_insert BEFORE INSERT ON hotel_stays
+                 WHEN NOT EXISTS (SELECT 1 FROM hotel_rooms WHERE id = NEW.room_id AND business_id = NEW.business_id)
+                 BEGIN SELECT RAISE(ABORT, \'A estadia tem de usar um quarto do mesmo negócio.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_event_pass_insert BEFORE INSERT ON event_passes
+                 WHEN NOT EXISTS (SELECT 1 FROM operational_records WHERE id = NEW.event_id AND business_id = NEW.business_id)
+                 BEGIN SELECT RAISE(ABORT, \'O passe tem de pertencer a um evento do mesmo negócio.\'); END'
+            );
+            $pdo->exec('CREATE INDEX idx_audit_business_created ON audit_events(business_id, created_at DESC)');
+            $pdo->exec('CREATE INDEX idx_audit_entity ON audit_events(business_id, entity_type, entity_id)');
+            $pdo->exec('CREATE INDEX idx_permissions_member ON membership_permissions(business_id, user_id)');
+            $pdo->exec('CREATE INDEX idx_purchase_business_status ON purchase_orders(business_id, status, created_at)');
+            $pdo->exec('CREATE INDEX idx_operational_business_type ON operational_records(business_id, record_type, status)');
+            $pdo->exec('CREATE INDEX idx_hotel_stay_room_dates ON hotel_stays(room_id, status, check_in_at, check_out_at)');
+            $pdo->exec('CREATE INDEX idx_event_pass_code ON event_passes(business_id, pass_code)');
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (7)');
+            $pdo->exec('PRAGMA user_version = 7');
+            if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('A migração de auditoria e operações causou uma violação de chave estrangeira.');
+            }
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
     private static function applyVariantsAndAttributes(PDO $pdo): void
     {
         if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 5) {

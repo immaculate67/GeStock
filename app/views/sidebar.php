@@ -21,7 +21,10 @@
             ['label' => 'Clientes', 'icon' => 'customers', 'page' => 'clients.php', 'module' => 'customers'],
             ['label' => 'Vendas', 'icon' => 'sales', 'page' => 'sales.php', 'module' => 'sales'],
             ['label' => 'Movimentos de stock', 'icon' => 'stock', 'page' => 'stock.php', 'module' => 'inventory'],
+            ['label' => 'Compras', 'icon' => 'stock', 'page' => 'purchases.php', 'module' => 'purchases'],
+            ['label' => 'Operações', 'icon' => 'grid', 'page' => 'operations.php', 'module' => 'operations'],
             ['label' => 'Relatórios', 'icon' => 'grid', 'page' => 'reports.php', 'module' => 'reports'],
+            ['label' => 'Auditoria', 'icon' => 'settings', 'page' => 'audit.php', 'module' => 'audit'],
             ['label' => 'Utilizadores', 'icon' => 'settings', 'page' => 'users.php', 'admin' => true, 'module' => 'users'],
             ['label' => 'Definições', 'icon' => 'settings', 'page' => 'settings.php', 'admin' => true, 'module' => 'settings'],
         ] as $item): ?>
