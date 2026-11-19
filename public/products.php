@@ -7,6 +7,7 @@ $user = requireAuthentication();
 requireBusinessModule($user, 'catalog');
 
 $repository = null;
+$catalog = null;
 $pageError = null;
 $mode = 'list';
 $formValues = [
@@ -40,6 +41,7 @@ $pageSize = 20;
 try {
     $businessId = (int) $user['business_id'];
     $repository = new ProductRepository(Database::connect(), $businessId);
+    $catalog = new CatalogVariantService(Database::connect(), $businessId);
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $postedAction = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
@@ -102,6 +104,33 @@ try {
                     }
                 }
             }
+        } elseif ($postedAction === 'save-variant') {
+            $productId = validRecordId($_POST['product_id'] ?? null);
+            if ($productId === null) {
+                throw new InvalidArgumentException('O produto indicado não é válido.');
+            }
+            $catalog->createVariant($productId, [
+                'identifier' => $_POST['identifier'] ?? '',
+                'sku' => $_POST['variant_sku'] ?? '',
+                'barcode' => $_POST['barcode'] ?? '',
+                'price_cents' => ($_POST['variant_price_cents'] ?? '') === '' ? null : validRecordId($_POST['variant_price_cents']),
+                'cost_price_cents' => ($_POST['variant_cost_price_cents'] ?? '') === '' ? null : validRecordId($_POST['variant_cost_price_cents']),
+                'quantity' => $_POST['variant_quantity'] ?? 0,
+                'min_stock_level' => $_POST['variant_min_stock_level'] ?? 0,
+                'branch_id' => ($_POST['branch_id'] ?? '') === '' ? null : validRecordId($_POST['branch_id']),
+            ]);
+            setFlash('success', 'Variante adicionada com sucesso.');
+            header('Location: products.php?action=edit&id=' . $productId, true, 303);
+            exit;
+        } elseif ($postedAction === 'save-attributes') {
+            $productId = validRecordId($_POST['product_id'] ?? null);
+            if ($productId === null || !is_array($_POST['attributes'] ?? null)) {
+                throw new InvalidArgumentException('Os atributos do produto não são válidos.');
+            }
+            $catalog->saveProductAttributes($productId, $_POST['attributes']);
+            setFlash('success', 'Atributos do produto atualizados.');
+            header('Location: products.php?action=edit&id=' . $productId, true, 303);
+            exit;
         } elseif ($postedAction === 'delete-product') {
             $mode = 'confirm-delete';
             $productId = validRecordId($_POST['product_id'] ?? null);
@@ -182,6 +211,10 @@ $productCount = 0;
 $totalPages = 1;
 $categories = [];
 $suppliers = [];
+$productVariants = [];
+$productAttributes = [];
+$attributeDefinitions = [];
+$branches = [];
 if ($repository !== null) {
     try {
         $productSummary = $repository->summary();
@@ -189,6 +222,14 @@ if ($repository !== null) {
         $supplierQuery = Database::connect()->prepare('SELECT id, name FROM suppliers WHERE business_id = :business_id ORDER BY name COLLATE NOCASE');
         $supplierQuery->execute(['business_id' => (int) $user['business_id']]);
         $suppliers = $supplierQuery->fetchAll();
+        $attributeDefinitions = $catalog?->attributeDefinitions() ?? [];
+        $branchQuery = Database::connect()->prepare('SELECT id, name FROM business_branches WHERE business_id = :business_id AND active = 1 ORDER BY name COLLATE NOCASE');
+        $branchQuery->execute(['business_id' => (int) $user['business_id']]);
+        $branches = $branchQuery->fetchAll();
+        if ($editingProduct !== null && $catalog !== null) {
+            $productVariants = $catalog->variants((int) $editingProduct['id']);
+            $productAttributes = $catalog->productAttributes((int) $editingProduct['id']);
+        }
         if ($mode === 'list') {
             $productCount = $repository->count($search, $filters);
             $totalPages = max(1, (int) ceil($productCount / $pageSize));
@@ -247,6 +288,13 @@ require $root . '/app/views/header.php';
                         <div><dt>Stock mínimo</dt><dd><?= (int) $editingProduct['min_stock_level'] ?></dd></div>
                         <div class="detail-wide"><dt>Descrição</dt><dd><?= nl2br(e($editingProduct['description'] ?? '—')) ?></dd></div>
                     </dl>
+                    <?php if ($productVariants !== []): ?>
+                        <h3>Variantes</h3>
+                        <div class="table-wrap"><table><thead><tr><th>IDENTIFICADOR</th><th>SKU</th><th>BARCODE</th><th>PREÇO</th><th>STOCK</th></tr></thead><tbody>
+                        <?php foreach ($productVariants as $variant): ?><tr><td><?= e($variant['identifier']) ?></td><td><?= e($variant['sku']) ?></td><td><?= e($variant['barcode'] ?? '—') ?></td><td><?= e($variant['price_cents'] === null ? formatPrice((int) $editingProduct['price_cents']) : formatPrice((int) $variant['price_cents'])) ?></td><td><?= (int) $variant['quantity'] ?></td></tr><?php endforeach; ?>
+                        </tbody></table></div>
+                    <?php endif; ?>
+                    <?php if ($productAttributes !== []): ?><h3>Atributos</h3><dl class="detail-grid"><?php foreach ($productAttributes as $attribute): ?><div><dt><?= e($attribute['label']) ?></dt><dd><?= e($attribute['value'] ?? (string) ($attribute['default_value'] ?? '—')) ?></dd></div><?php endforeach; ?></dl><?php endif; ?>
                 </section>
             <?php elseif ($mode === 'form'): ?>
                 <section class="panel product-form-panel" aria-labelledby="form-title">
@@ -317,6 +365,34 @@ require $root . '/app/views/header.php';
                         </div>
                     </form>
                 </section>
+                <?php if ($editingProduct !== null): ?>
+                    <section class="panel product-form-panel">
+                        <div class="panel-heading"><div><h2>Variantes e atributos</h2><p>Venda e acompanhe stock de cada apresentação sem alterar o produto base.</p></div></div>
+                        <?php if ($productVariants !== []): ?><div class="table-wrap"><table><thead><tr><th>IDENTIFICADOR</th><th>SKU</th><th>STOCK</th><th>PREÇO</th></tr></thead><tbody><?php foreach ($productVariants as $variant): ?><tr><td><?= e($variant['identifier']) ?></td><td><?= e($variant['sku']) ?></td><td><?= (int) $variant['quantity'] ?></td><td><?= e($variant['price_cents'] === null ? 'Preço base' : formatPrice((int) $variant['price_cents'])) ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?>
+                        <form class="product-form" method="post">
+                            <input type="hidden" name="action" value="save-variant"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="product_id" value="<?= (int) $editingProduct['id'] ?>">
+                            <div class="form-grid">
+                                <div class="field"><label for="identifier">Identificador da variante</label><input id="identifier" name="identifier" maxlength="120" required placeholder="Ex.: Tamanho grande"></div>
+                                <div class="field"><label for="variant_sku">SKU da variante</label><input id="variant_sku" name="variant_sku" maxlength="40" required></div>
+                                <div class="field"><label for="barcode">Código de barras</label><input id="barcode" name="barcode" maxlength="80"></div>
+                                <div class="field"><label for="variant_price_cents">Preço (cêntimos, opcional)</label><input id="variant_price_cents" name="variant_price_cents" type="number" min="0"></div>
+                                <div class="field"><label for="variant_cost_price_cents">Custo (cêntimos, opcional)</label><input id="variant_cost_price_cents" name="variant_cost_price_cents" type="number" min="0"></div>
+                                <div class="field"><label for="variant_quantity">Stock inicial</label><input id="variant_quantity" name="variant_quantity" type="number" min="0" value="0" required></div>
+                                <div class="field"><label for="variant_min_stock_level">Stock mínimo</label><input id="variant_min_stock_level" name="variant_min_stock_level" type="number" min="0" value="0" required></div>
+                                <div class="field"><label for="branch_id">Local</label><select id="branch_id" name="branch_id"><option value="">Todos os locais</option><?php foreach ($branches as $branch): ?><option value="<?= (int) $branch['id'] ?>"><?= e($branch['name']) ?></option><?php endforeach; ?></select></div>
+                            </div>
+                            <div class="form-actions"><button class="button button--primary" type="submit">Adicionar variante</button></div>
+                        </form>
+                        <?php if ($attributeDefinitions !== []): ?>
+                            <form class="product-form" method="post">
+                                <input type="hidden" name="action" value="save-attributes"><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="product_id" value="<?= (int) $editingProduct['id'] ?>">
+                                <h3>Atributos personalizados</h3><div class="form-grid">
+                                <?php foreach ($productAttributes as $attribute): ?><div class="field"><label for="attribute-<?= (int) $attribute['id'] ?>"><?= e($attribute['label']) ?><?= (int) $attribute['required'] === 1 ? ' *' : '' ?></label><?php if ($attribute['field_type'] === 'select'): ?><select id="attribute-<?= (int) $attribute['id'] ?>" name="attributes[<?= (int) $attribute['id'] ?>]"><option value="">Selecionar</option><?php foreach (json_decode((string) $attribute['options_json'], true, 512, JSON_THROW_ON_ERROR) as $option): ?><option value="<?= e($option) ?>"<?= (string) $option === (string) ($attribute['value'] ?? '') ? ' selected' : '' ?>><?= e($option) ?></option><?php endforeach; ?></select><?php else: ?><input id="attribute-<?= (int) $attribute['id'] ?>" name="attributes[<?= (int) $attribute['id'] ?>]" type="<?= $attribute['field_type'] === 'date' ? 'date' : ($attribute['field_type'] === 'integer' ? 'number' : 'text') ?>" value="<?= e((string) ($attribute['value'] ?? '')) ?>"><?php endif; ?></div><?php endforeach; ?>
+                                </div><div class="form-actions"><button class="button button--primary" type="submit">Guardar atributos</button></div>
+                            </form>
+                        <?php endif; ?>
+                    </section>
+                <?php endif; ?>
             <?php elseif ($mode === 'confirm-delete'): ?>
                 <section class="panel confirm-panel" aria-labelledby="confirm-title">
                     <div class="panel-heading">
@@ -376,6 +452,7 @@ require $root . '/app/views/header.php';
                                 <tr>
                                     <th scope="col">PRODUTO</th>
                                     <th scope="col">CÓDIGO</th>
+                                    <th scope="col">VARIANTES</th>
                                     <th scope="col">CATEGORIA</th>
                                     <th scope="col">CUSTO</th>
                                     <th scope="col">PREÇO</th>
@@ -402,6 +479,7 @@ require $root . '/app/views/header.php';
                                             <?php if ($product['description'] !== null && $product['description'] !== ''): ?><span><?= e($product['description']) ?></span><?php endif; ?>
                                         </td>
                                         <td><?= e($product['sku']) ?></td>
+                                        <td><?= (int) ($product['variant_count'] ?? 0) ?></td>
                                         <td><?= e($product['category_name'] ?? '—') ?></td>
                                         <td class="amount-cell"><?= e(formatPrice((int) $product['cost_price_cents'])) ?></td>
                                         <td class="amount-cell"><?= e(formatPrice((int) $product['price_cents'])) ?></td>

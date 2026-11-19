@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/ProductRepository.php';
 require_once dirname(__DIR__) . '/app/ProductValidator.php';
+require_once dirname(__DIR__) . '/app/CatalogVariantService.php';
 require_once dirname(__DIR__) . '/app/BusinessRepository.php';
 require_once dirname(__DIR__) . '/app/BusinessService.php';
 require_once dirname(__DIR__) . '/app/BusinessConfigurationService.php';
@@ -44,7 +45,7 @@ try {
     IndustryTemplateService::apply($pdo, $businessId, 'custom');
     $repository = new ProductRepository($pdo, $businessId);
     $assert(
-        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 4
+        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 6
         && (int) $pdo->query('SELECT COUNT(*) FROM item_types WHERE business_id = ' . $businessId)->fetchColumn() === 3
         && (int) $pdo->query('SELECT COUNT(*) FROM business_branches WHERE business_id = ' . $businessId)->fetchColumn() === 1,
         'catalog architecture creates isolated item types and a default branch for each business'
@@ -622,6 +623,113 @@ try {
     $business->delete('suppliers', $supplierId);
     $business->delete('clients', $clientId);
     $assert($repository->find($saleProductId)['supplier_id'] === null && $service->sale($saleId)['client_name_snapshot'] === 'Cliente de Teste', 'supplier and client deletion preserve historical records safely');
+
+    $catalog = new CatalogVariantService($pdo, $businessId);
+    $variantId = $catalog->createVariant($saleProductId, [
+        'identifier' => 'Tamanho grande', 'sku' => 'TEA-1-L', 'barcode' => '5601234567890',
+        'price_cents' => 1450, 'cost_price_cents' => 600, 'quantity' => 4, 'min_stock_level' => 1,
+    ]);
+    $assert(
+        $variantId > 0
+        && $catalog->variants($saleProductId)[0]['sku'] === 'TEA-1-L'
+        && (int) $catalog->variants($saleProductId)[0]['quantity'] === 4,
+        'variants have independent SKU, barcode, price and stock values'
+    );
+    $variantTenantRejected = false;
+    try {
+        (new CatalogVariantService($pdo, $secondBusinessId))->createVariant($saleProductId, [
+            'identifier' => 'Externa', 'sku' => 'EXTERNAL-1', 'quantity' => 1,
+        ]);
+    } catch (DomainException) {
+        $variantTenantRejected = true;
+    }
+    $assert($variantTenantRejected, 'variants cannot reference a product from another business');
+    $duplicateVariantRejected = false;
+    try {
+        $catalog->createVariant($saleProductId, ['identifier' => 'Outra', 'sku' => 'TEA-1-L', 'quantity' => 1]);
+    } catch (PDOException) {
+        $duplicateVariantRejected = true;
+    }
+    $assert($duplicateVariantRejected, 'variant SKUs are unique within a business');
+    $variantSaleService = new InventoryService($pdo, $businessId);
+    $variantSaleId = $variantSaleService->createSale(null, [[
+        'product_id' => $saleProductId, 'variant_id' => $variantId, 'quantity' => 2,
+    ]], $userId);
+    $variantSaleItem = $variantSaleService->sale($variantSaleId)['items'][0];
+    $variantAfterSale = $catalog->variants($saleProductId)[0];
+    $assert(
+        (int) $variantSaleItem['variant_id'] === $variantId
+        && $variantSaleItem['sku_snapshot'] === 'TEA-1-L'
+        && (int) $variantSaleItem['unit_price_cents'] === 1450
+        && (int) $variantAfterSale['quantity'] === 2,
+        'checkout prices and consumes the selected variant stock with historical snapshots'
+    );
+    $variantSaleService->cancelSale($variantSaleId, $userId);
+    $assert((int) $catalog->variants($saleProductId)[0]['quantity'] === 4, 'cancelling a variant sale restores variant stock');
+    $variantSaleService->adjustVariantStock($variantId, 'in', 3, 'Receção de compra', $userId);
+    $assert((int) $catalog->variants($saleProductId)[0]['quantity'] === 7, 'stock management can adjust a variant and records its movement');
+
+    $sizeAttributeId = $catalog->createAttributeDefinition([
+        'attribute_key' => 'size', 'label' => 'Tamanho', 'field_type' => 'select',
+        'options' => ['Pequeno', 'Grande'], 'required' => true, 'default_value' => 'Grande',
+    ]);
+    $organicAttributeId = $catalog->createAttributeDefinition([
+        'attribute_key' => 'organic', 'label' => 'Biológico', 'field_type' => 'boolean',
+        'required' => false, 'default_value' => 'false',
+    ]);
+    $requiredAttributeId = $catalog->createAttributeDefinition([
+        'attribute_key' => 'batch_code', 'label' => 'Lote', 'field_type' => 'text',
+        'required' => true,
+    ]);
+    $dateAttributeId = $catalog->createAttributeDefinition([
+        'attribute_key' => 'expiry_date', 'label' => 'Validade', 'field_type' => 'date',
+    ]);
+    $catalog->saveProductAttributes($saleProductId, [$sizeAttributeId => 'Pequeno', $requiredAttributeId => 'L1']);
+    $attributes = $catalog->productAttributes($saleProductId);
+    $attributeValues = [];
+    foreach ($attributes as $attribute) {
+        $attributeValues[$attribute['attribute_key']] = $attribute['value'];
+    }
+    $assert(
+        count($attributes) === 4
+        && $attributeValues['size'] === 'Pequeno'
+        && $attributeValues['organic'] === 'false'
+        && $attributeValues['batch_code'] === 'L1',
+        'custom attributes apply field validation and defaults to products'
+    );
+    $invalidAttributeRejected = false;
+    try {
+        $catalog->saveProductAttributes($saleProductId, [$sizeAttributeId => 'Inexistente']);
+    } catch (InvalidArgumentException) {
+        $invalidAttributeRejected = true;
+    }
+    $assert($invalidAttributeRejected, 'custom attributes reject values outside configured options');
+    $requiredAttributeRejected = false;
+    try {
+        $catalog->saveProductAttributes($saleProductId, [$organicAttributeId => 'true']);
+    } catch (InvalidArgumentException) {
+        $requiredAttributeRejected = true;
+    }
+    $assert($requiredAttributeRejected, 'required custom attributes reject missing values');
+    $invalidDateRejected = false;
+    try {
+        $catalog->saveProductAttributes($saleProductId, [
+            $sizeAttributeId => 'Grande', $requiredAttributeId => 'L2', $dateAttributeId => '2026-02-31',
+        ]);
+    } catch (InvalidArgumentException) {
+        $invalidDateRejected = true;
+    }
+    $assert($invalidDateRejected, 'date custom attributes reject impossible calendar dates');
+    $crossTenantAttributeRejected = false;
+    try {
+        (new CatalogVariantService($pdo, $secondBusinessId))->createAttributeDefinition([
+            'attribute_key' => 'size', 'label' => 'Tamanho', 'field_type' => 'text',
+        ]);
+        (new CatalogVariantService($pdo, $secondBusinessId))->saveProductAttributes($saleProductId, [$sizeAttributeId => 'Grande']);
+    } catch (DomainException) {
+        $crossTenantAttributeRejected = true;
+    }
+    $assert($crossTenantAttributeRejected, 'custom attribute values remain isolated by business');
 
     $_SESSION = [];
     $csrf = csrfToken();

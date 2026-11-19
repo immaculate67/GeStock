@@ -15,6 +15,9 @@ final class DatabaseMigrations
             self::applyIndustryTemplates($pdo);
             self::applyTenantIntegrityAndCategories($pdo);
             self::applyCatalogArchitecture($pdo);
+            self::applyVariantsAndAttributes($pdo);
+            self::applyVariantSales($pdo);
+            self::applyPermissionsAuditPurchasing($pdo);
             return;
         }
 
@@ -173,6 +176,118 @@ final class DatabaseMigrations
         self::applyIndustryTemplates($pdo);
         self::applyTenantIntegrityAndCategories($pdo);
         self::applyCatalogArchitecture($pdo);
+        self::applyVariantsAndAttributes($pdo);
+        self::applyVariantSales($pdo);
+        self::applyPermissionsAuditPurchasing($pdo);
+    }
+
+    private static function applyVariantsAndAttributes(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 5) {
+            return;
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec(
+                'CREATE TABLE product_variants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    identifier TEXT NOT NULL CHECK (length(identifier) BETWEEN 1 AND 120),
+                    sku TEXT NOT NULL COLLATE NOCASE CHECK (length(sku) BETWEEN 1 AND 40),
+                    barcode TEXT NULL COLLATE NOCASE CHECK (barcode IS NULL OR length(barcode) BETWEEN 1 AND 80),
+                    price_cents INTEGER NULL CHECK (price_cents IS NULL OR price_cents >= 0),
+                    cost_price_cents INTEGER NULL CHECK (cost_price_cents IS NULL OR cost_price_cents >= 0),
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity BETWEEN 0 AND 2147483647),
+                    min_stock_level INTEGER NOT NULL DEFAULT 0 CHECK (min_stock_level BETWEEN 0 AND 2147483647),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, sku),
+                    UNIQUE (business_id, barcode)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE custom_attribute_definitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    attribute_key TEXT NOT NULL COLLATE NOCASE CHECK (length(attribute_key) BETWEEN 1 AND 40),
+                    label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 120),
+                    field_type TEXT NOT NULL CHECK (field_type IN (\'text\', \'integer\', \'decimal\', \'boolean\', \'date\', \'select\')),
+                    options_json TEXT NOT NULL DEFAULT \'[]\',
+                    required INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
+                    default_value TEXT NULL,
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, attribute_key)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE product_attribute_values (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                    attribute_id INTEGER NOT NULL REFERENCES custom_attribute_definitions(id) ON DELETE RESTRICT,
+                    value TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (product_id, attribute_id)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_variant_references_insert
+                 BEFORE INSERT ON product_variants
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM products WHERE id = NEW.product_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'A variante tem de pertencer ao mesmo negócio do produto.\') END;
+                     SELECT CASE WHEN NEW.branch_id IS NOT NULL AND NOT EXISTS (
+                         SELECT 1 FROM business_branches WHERE id = NEW.branch_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'O local da variante tem de pertencer ao mesmo negócio.\') END;
+                 END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_variant_references_update
+                 BEFORE UPDATE OF business_id, product_id, branch_id ON product_variants
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM products WHERE id = NEW.product_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'A variante tem de pertencer ao mesmo negócio do produto.\') END;
+                     SELECT CASE WHEN NEW.branch_id IS NOT NULL AND NOT EXISTS (
+                         SELECT 1 FROM business_branches WHERE id = NEW.branch_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'O local da variante tem de pertencer ao mesmo negócio.\') END;
+                 END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_attribute_value_references_insert
+                 BEFORE INSERT ON product_attribute_values
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM products WHERE id = NEW.product_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'O atributo tem de pertencer ao mesmo negócio do produto.\') END;
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM custom_attribute_definitions WHERE id = NEW.attribute_id AND business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'A definição do atributo tem de pertencer ao mesmo negócio.\') END;
+                 END'
+            );
+            $pdo->exec('CREATE INDEX idx_variants_product ON product_variants(business_id, product_id, active)');
+            $pdo->exec('CREATE INDEX idx_attributes_business ON custom_attribute_definitions(business_id, active)');
+            $pdo->exec('CREATE INDEX idx_attribute_values_product ON product_attribute_values(business_id, product_id)');
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (5)');
+            $pdo->exec('PRAGMA user_version = 5');
+            if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('The V6 variants migration caused a foreign key violation.');
+            }
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
     }
 
     private static function applyIndustryTemplates(PDO $pdo): void
@@ -211,6 +326,49 @@ final class DatabaseMigrations
             }
             $pdo->exec('INSERT INTO schema_migrations (version) VALUES (2)');
             $pdo->exec('PRAGMA user_version = 2');
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
+    private static function applyVariantSales(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 6) {
+            return;
+        }
+        $pdo->beginTransaction();
+        try {
+            self::addColumn($pdo, 'sale_items', 'variant_id', 'INTEGER NULL REFERENCES product_variants(id) ON DELETE RESTRICT');
+            self::addColumn($pdo, 'stock_movements', 'variant_id', 'INTEGER NULL REFERENCES product_variants(id) ON DELETE RESTRICT');
+            $pdo->exec(
+                'CREATE TRIGGER validate_sale_variant_insert
+                 BEFORE INSERT ON sale_items
+                 WHEN NEW.variant_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM product_variants
+                     WHERE id = NEW.variant_id AND product_id = NEW.product_id AND business_id = NEW.business_id
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'A variante da venda não pertence ao produto e negócio indicados.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_movement_variant_insert
+                 BEFORE INSERT ON stock_movements
+                 WHEN NEW.variant_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM product_variants
+                     WHERE id = NEW.variant_id AND product_id = NEW.product_id AND business_id = NEW.business_id
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'A variante do movimento não pertence ao produto e negócio indicados.\'); END'
+            );
+            $pdo->exec('CREATE INDEX idx_sale_items_variant ON sale_items(variant_id)');
+            $pdo->exec('CREATE INDEX idx_movements_variant ON stock_movements(variant_id, created_at)');
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (6)');
+            $pdo->exec('PRAGMA user_version = 6');
+            if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('The V6 variant sales migration caused a foreign key violation.');
+            }
             $pdo->commit();
         } catch (Throwable $exception) {
             if ($pdo->inTransaction()) {

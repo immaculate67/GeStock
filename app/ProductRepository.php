@@ -16,7 +16,9 @@ final class ProductRepository
         $parameters = ['business_id' => $this->businessId];
         if ($search !== '') {
             $escapedSearch = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search);
-            $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE)";
+            $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE
+                OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.business_id = p.business_id
+                    AND (v.sku LIKE :search ESCAPE '\\' COLLATE NOCASE OR v.barcode LIKE :search ESCAPE '\\' COLLATE NOCASE)))";
             $parameters['search'] = '%' . $escapedSearch . '%';
         }
         if (isset($filters['category_id']) && ctype_digit((string) $filters['category_id'])) {
@@ -39,7 +41,8 @@ final class ProductRepository
         ];
         $sort = $sorts[$filters['sort'] ?? 'name'] ?? $sorts['name'];
         $direction = ($filters['direction'] ?? '') === 'desc' ? 'DESC' : 'ASC';
-        $sql = 'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label
+        $sql = 'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label,
+                       (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id AND v.business_id = p.business_id) AS variant_count
                 FROM products p
                 LEFT JOIN categories c ON c.id = p.category_id
                 LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -70,7 +73,9 @@ final class ProductRepository
         $parameters = ['business_id' => $this->businessId];
         if ($search !== '') {
             $escapedSearch = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $search);
-            $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE)";
+            $where[] = "(p.name LIKE :search ESCAPE '\\' COLLATE NOCASE OR p.sku LIKE :search ESCAPE '\\' COLLATE NOCASE
+                OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.business_id = p.business_id
+                    AND (v.sku LIKE :search ESCAPE '\\' COLLATE NOCASE OR v.barcode LIKE :search ESCAPE '\\' COLLATE NOCASE)))";
             $parameters['search'] = '%' . $escapedSearch . '%';
         }
         if (isset($filters['category_id']) && ctype_digit((string) $filters['category_id'])) {
@@ -94,7 +99,8 @@ final class ProductRepository
     public function find(int $id): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label
+            'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label,
+                    (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id AND v.business_id = p.business_id) AS variant_count
              FROM products p
              LEFT JOIN categories c ON c.id = p.category_id
              LEFT JOIN suppliers s ON s.id = p.supplier_id

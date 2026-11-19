@@ -36,7 +36,13 @@ if (saleLines && addSaleLine) {
     const updateTotal = () => {
         let total = 0;
         saleLines.querySelectorAll('.sale-line').forEach((row) => {
-            const product = products.find((item) => String(item.id) === row.querySelector('[name="product_id[]"]').value);
+            const choice = row.querySelector('[data-product-choice]');
+            const product = products.find((item) => `${item.id}:${item.variant_id || 0}` === choice?.value);
+            const parts = (choice?.value || ':').split(':');
+            const productValue = row.querySelector('[data-product-value]');
+            const variantValue = row.querySelector('[data-variant-value]');
+            if (productValue) productValue.value = parts[0] || '';
+            if (variantValue) variantValue.value = parts[1] && parts[1] !== '0' ? parts[1] : '';
             const quantity = Number.parseInt(row.querySelector('[name="quantity[]"]').value, 10) || 0;
             const unitPrice = row.querySelector('[data-unit-price]');
             const lineTotal = row.querySelector('[data-line-total]');
@@ -61,7 +67,8 @@ if (saleLines && addSaleLine) {
         const label = document.createElement('label');
         label.textContent = 'Produto';
         const select = document.createElement('select');
-        select.name = 'product_id[]';
+        select.name = 'product_choice[]';
+        select.dataset.productChoice = '';
         select.required = true;
         const placeholder = document.createElement('option');
         placeholder.value = '';
@@ -69,8 +76,8 @@ if (saleLines && addSaleLine) {
         select.append(placeholder);
         products.forEach((product) => {
             const option = document.createElement('option');
-            option.value = String(product.id);
-            option.textContent = `${product.name} · ${product.sku} · ${product.stock} un. · ${product.price}`;
+            option.value = `${product.id}:${product.variant_id || 0}`;
+            option.textContent = `${product.label} · ${product.stock} un. · ${product.price}`;
             select.append(option);
         });
         label.htmlFor = `sale-product-${saleLines.children.length}`;
@@ -104,6 +111,15 @@ if (saleLines && addSaleLine) {
         remove.type = 'button';
         remove.textContent = 'Remover';
         remove.setAttribute('aria-label', `Remover produto da linha ${saleLines.children.length + 1}`);
+        const productValue = document.createElement('input');
+        productValue.type = 'hidden';
+        productValue.name = 'product_id[]';
+        productValue.dataset.productValue = '';
+        const variantValue = document.createElement('input');
+        variantValue.type = 'hidden';
+        variantValue.name = 'variant_id[]';
+        variantValue.dataset.variantValue = '';
+        productField.append(productValue, variantValue);
         row.append(productField, quantityField, priceSummary, remove);
         return row;
     };

@@ -166,3 +166,41 @@ Not implemented or not yet verified against the complete specification:
 - Exact next task: implement item variants and validated per-item custom
   attributes, then add focused migration and tenant-isolation tests before
   starting append-only audit events and granular membership permissions.
+
+### V6.3 checkpoint
+
+- Added additive migration version 5 for business-scoped product variants,
+  independent SKUs/barcodes/price overrides and stock fields, plus validated
+  custom attribute definitions and product values.
+- Added `CatalogVariantService` with tenant checks, variant uniqueness,
+  configurable text/integer/decimal/boolean/date/select fields, required
+  values, defaults and select-option validation.
+- Added isolated coverage for variant identity/stock, duplicate identifiers,
+  cross-business references, custom defaults, required values and invalid
+  options.
+- Verification: `php tests/run.php` passed **109 isolated checks**; all PHP
+  syntax checks passed; `git diff --check` passed. No command in this session
+  modified `storage/gestock.sqlite`.
+- Next task: connect variants and custom attributes to the catalog UI and
+  stock/sales workflows, then implement append-only audit events and
+  granular membership permissions.
+
+### V6.4 connected catalog and checkout milestone
+
+- Connected variants to the product interface: product lists show variant
+  counts, product details show variant identifiers/SKUs/barcodes/prices/stock,
+  and product editing can add variants and edit validated custom attributes.
+- Connected variants to checkout: users can select stocked base products or
+  variants, server-side totals use variant price overrides, sale items preserve
+  variant snapshots, and cancellation restores the variant stock.
+- Connected variant movements to stock management and movement history,
+  including manual entry, exit and correction handling and visible variant
+  labels.
+- Variant SKU/barcode searches now match from the product catalog search.
+- Verification: `php tests/run.php` passed **112 isolated checks** after the
+  connected workflow additions; PHP syntax, JavaScript syntax and
+  `git diff --check` passed. The live database was not modified.
+- Remaining limitation for this milestone: variant editing/deactivation and
+  custom-attribute definition management are not yet exposed as dedicated
+  settings screens; audit history, granular permissions, purchases and the
+  industry workflows remain unfinished.
