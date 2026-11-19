@@ -111,6 +111,10 @@ complete the full master specification:
   sales retain unknown historical costs rather than receiving invented values.
 - Added business-aware authentication, active-business selection, business
   creation from configuration templates, and per-business module settings.
+- Added business-scoped branches and saleable item types (product, service and
+  resource), with migration-safe defaults, active/inactive configuration,
+  cross-business validation, and catalog integration that preserves existing
+  stock-tracked products.
 - Business creation now accepts a validated selection of supported operational
   modules; user management and settings remain enabled for later configuration.
 - Scoped the existing catalog, stock, sales, reports, settings, and user
@@ -123,8 +127,7 @@ complete the full master specification:
 
 Not implemented or not yet verified against the complete specification:
 
-- Configurable branches, saleable item types, variants, custom attributes, and
-  the full business setup/review wizard.
+- Item variants, custom attributes, and the full business setup/review wizard.
 - Granular permissions, append-only audit history, and secure administrator
   verification.
 - Industry-specific hotel, ticketing, appointments, rentals, manufacturing,
@@ -140,8 +143,26 @@ Not implemented or not yet verified against the complete specification:
   migration implementation, business setup, authentication, user management,
   tenant-scoped queries, and tests. The active branch is based on V5; no V6
   implementation was overwritten.
-- `php tests/run.php`: **98 checks passed** using isolated temporary databases.
+- `php tests/run.php`: **101 checks passed** after the catalog architecture
+  additions, using isolated temporary databases.
 - `find app public scripts tests -name '*.php' -print0 | xargs -0 -n1 php -l`:
   **all PHP files passed** after the current implementation changes.
 - `git diff --check`: passed.
 - No command in this session modified `storage/gestock.sqlite`.
+
+### Latest checkpoint
+
+- Implemented migration version 4 with `business_branches`, `item_types`, and
+  product item-type references. Existing products default to the stock-tracked
+  product type; existing businesses receive a principal branch and the three
+  built-in types without generated operational records.
+- Added `BusinessConfigurationService` and settings controls for adding
+  business locations and enabling or disabling item types. Disabled types are
+  rejected server-side and all reads/writes remain business-scoped.
+- Updated product repository joins and validation while retaining the existing
+  product/stock workflow as the default.
+- Verification: **101 isolated functional checks passed**, all PHP syntax checks
+  passed, and `git diff --check` passed.
+- Exact next task: implement item variants and validated per-item custom
+  attributes, then add focused migration and tenant-isolation tests before
+  starting append-only audit events and granular membership permissions.

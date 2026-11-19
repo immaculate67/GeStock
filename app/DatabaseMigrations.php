@@ -14,6 +14,7 @@ final class DatabaseMigrations
         if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 1) {
             self::applyIndustryTemplates($pdo);
             self::applyTenantIntegrityAndCategories($pdo);
+            self::applyCatalogArchitecture($pdo);
             return;
         }
 
@@ -171,6 +172,7 @@ final class DatabaseMigrations
         }
         self::applyIndustryTemplates($pdo);
         self::applyTenantIntegrityAndCategories($pdo);
+        self::applyCatalogArchitecture($pdo);
     }
 
     private static function applyIndustryTemplates(PDO $pdo): void
@@ -357,6 +359,108 @@ final class DatabaseMigrations
             $pdo->exec('PRAGMA user_version = 3');
             if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
                 throw new RuntimeException('The V6 tenant integrity migration caused a foreign key violation.');
+            }
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
+    private static function applyCatalogArchitecture(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 4) {
+            return;
+        }
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec(
+                'CREATE TABLE business_branches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+                    code TEXT NOT NULL COLLATE NOCASE CHECK (length(code) BETWEEN 1 AND 40),
+                    address TEXT NULL CHECK (address IS NULL OR length(address) <= 500),
+                    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, name), UNIQUE (business_id, code)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE item_types (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    type_key TEXT NOT NULL COLLATE NOCASE CHECK (length(type_key) BETWEEN 1 AND 40),
+                    label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 100),
+                    stock_tracked INTEGER NOT NULL DEFAULT 1 CHECK (stock_tracked IN (0, 1)),
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (business_id, type_key)
+                )'
+            );
+            self::addColumn($pdo, 'products', 'item_type_id', 'INTEGER NULL REFERENCES item_types(id) ON DELETE RESTRICT');
+            $insertType = $pdo->prepare(
+                'INSERT INTO item_types (business_id, type_key, label, stock_tracked)
+                 VALUES (:business_id, :type_key, :label, :stock_tracked)'
+            );
+            $insertBranch = $pdo->prepare(
+                'INSERT INTO business_branches (business_id, name, code) VALUES (:business_id, :name, :code)'
+            );
+            $typeQuery = $pdo->prepare(
+                "SELECT id FROM item_types WHERE business_id = :business_id AND type_key = 'product'"
+            );
+            $updateProducts = $pdo->prepare(
+                'UPDATE products SET item_type_id = :item_type_id
+                 WHERE business_id = :business_id AND item_type_id IS NULL'
+            );
+            foreach ($pdo->query('SELECT id FROM businesses ORDER BY id')->fetchAll(PDO::FETCH_COLUMN) as $businessId) {
+                $businessId = (int) $businessId;
+                foreach ([['product', 'Produto', 1], ['service', 'Serviço', 0], ['resource', 'Recurso', 0]] as $type) {
+                    $insertType->execute([
+                        'business_id' => $businessId,
+                        'type_key' => $type[0],
+                        'label' => $type[1],
+                        'stock_tracked' => $type[2],
+                    ]);
+                }
+                $insertBranch->execute([
+                    'business_id' => $businessId,
+                    'name' => 'Local principal',
+                    'code' => 'MAIN',
+                ]);
+                $typeQuery->execute(['business_id' => $businessId]);
+                $updateProducts->execute([
+                    'item_type_id' => (int) $typeQuery->fetchColumn(),
+                    'business_id' => $businessId,
+                ]);
+            }
+            $pdo->exec(
+                'CREATE TRIGGER validate_product_item_type_insert
+                 BEFORE INSERT ON products
+                 WHEN NEW.item_type_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM item_types
+                     WHERE id = NEW.item_type_id AND business_id = NEW.business_id AND enabled = 1
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'O tipo de artigo tem de pertencer ao mesmo negócio e estar ativo.\'); END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER validate_product_item_type_update
+                 BEFORE UPDATE OF item_type_id, business_id ON products
+                 WHEN NEW.item_type_id IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM item_types
+                     WHERE id = NEW.item_type_id AND business_id = NEW.business_id AND enabled = 1
+                 )
+                 BEGIN SELECT RAISE(ABORT, \'O tipo de artigo tem de pertencer ao mesmo negócio e estar ativo.\'); END'
+            );
+            $pdo->exec('CREATE INDEX idx_branches_business ON business_branches(business_id, active)');
+            $pdo->exec('CREATE INDEX idx_item_types_business ON item_types(business_id, enabled)');
+            $pdo->exec('CREATE INDEX idx_products_item_type ON products(business_id, item_type_id)');
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (4)');
+            $pdo->exec('PRAGMA user_version = 4');
+            if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('The V6 catalog architecture migration caused a foreign key violation.');
             }
             $pdo->commit();
         } catch (Throwable $exception) {

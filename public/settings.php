@@ -8,10 +8,40 @@ $pdo = Database::connect();
 $error = '';
 $feedback = takeFlash();
 $moduleOptions = BusinessService::moduleOptions();
+$configuration = new BusinessConfigurationService($pdo, (int) $user['business_id']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
         http_response_code(400);
         $error = 'A sessão expirou. Atualize a página e tente novamente.';
+    } elseif (($_POST['action'] ?? '') === 'save-branch') {
+        try {
+            $configuration->saveBranch(
+                is_string($_POST['branch_name'] ?? null) ? $_POST['branch_name'] : '',
+                is_string($_POST['branch_code'] ?? null) ? $_POST['branch_code'] : '',
+                is_string($_POST['branch_address'] ?? null) ? $_POST['branch_address'] : ''
+            );
+            setFlash('success', 'Local guardado.');
+            header('Location: settings.php', true, 303);
+            exit;
+        } catch (InvalidArgumentException|PDOException $exception) {
+            $error = $exception instanceof PDOException
+                ? 'O nome ou código do local já está em utilização.'
+                : $exception->getMessage();
+        }
+    } elseif (($_POST['action'] ?? '') === 'toggle-item-type') {
+        $typeId = validRecordId($_POST['item_type_id'] ?? null);
+        if ($typeId === null) {
+            $error = 'O tipo de artigo selecionado não é válido.';
+        } else {
+            try {
+                $configuration->setItemTypeEnabled($typeId, ($_POST['enabled'] ?? '') === '1');
+                setFlash('success', 'Tipos de artigo atualizados.');
+                header('Location: settings.php', true, 303);
+                exit;
+            } catch (DomainException $exception) {
+                $error = $exception->getMessage();
+            }
+        }
     } elseif (($_POST['action'] ?? '') === 'save-modules') {
         $submittedModules = $_POST['modules'] ?? [];
         if (!is_array($submittedModules)
@@ -89,6 +119,8 @@ $modulesQuery = $pdo->prepare(
 );
 $modulesQuery->execute(['business_id' => (int) $user['business_id']]);
 $moduleRows = $modulesQuery->fetchAll();
+$branches = $configuration->branches();
+$itemTypes = $configuration->itemTypes();
 $activePage = 'settings.php';
 $pageTitle = 'Definições';
 $pageSubtitle = 'Configuração básica do espaço de trabalho.';
@@ -105,5 +137,20 @@ require $root . '/app/views/header.php';
         <?php endforeach; ?></div>
         <div class="form-actions"><button class="button button--primary" type="submit">Guardar módulos</button></div>
     </form>
+</section>
+<section class="panel product-form-panel"><div class="panel-heading"><div><h2>Locais e tipos de artigo</h2><p>Prepare filiais, serviços e recursos sem criar inventário automaticamente.</p></div></div>
+    <div class="business-list">
+        <?php foreach ($branches as $branch): ?>
+            <article class="business-card"><div><strong><?= e($branch['name']) ?></strong><span><?= e($branch['code']) ?><?= $branch['address'] !== null ? ' · ' . e($branch['address']) : '' ?></span></div><span class="status-pill<?= (int) $branch['active'] ? ' status-pill--healthy' : '' ?>"><?= (int) $branch['active'] ? 'Ativo' : 'Inativo' ?></span></article>
+        <?php endforeach; ?>
+    </div>
+    <form class="product-form" method="post">
+        <input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="save-branch">
+        <div class="form-grid"><div class="field"><label for="branch_name">Nome do local</label><input id="branch_name" name="branch_name" maxlength="120" required></div><div class="field"><label for="branch_code">Código</label><input id="branch_code" name="branch_code" maxlength="40" required></div><div class="field field--wide"><label for="branch_address">Morada <span class="field-optional">(opcional)</span></label><input id="branch_address" name="branch_address" maxlength="500"></div></div>
+        <div class="form-actions"><button class="button button--secondary" type="submit">Adicionar local</button></div>
+    </form>
+    <div class="module-settings-list"><?php foreach ($itemTypes as $itemType): ?>
+        <form class="module-setting" method="post"><span><strong><?= e($itemType['label']) ?></strong><small><?= (int) $itemType['stock_tracked'] ? 'Controla stock' : 'Sem stock automático' ?></small></span><input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>"><input type="hidden" name="action" value="toggle-item-type"><input type="hidden" name="item_type_id" value="<?= (int) $itemType['id'] ?>"><input type="hidden" name="enabled" value="<?= (int) $itemType['enabled'] ? '0' : '1' ?>"><button class="button button--secondary" type="submit"><?= (int) $itemType['enabled'] ? 'Desativar' : 'Ativar' ?></button></form>
+    <?php endforeach; ?></div>
 </section>
 <?php require $root . '/app/views/footer.php'; ?>

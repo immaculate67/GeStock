@@ -39,9 +39,11 @@ final class ProductRepository
         ];
         $sort = $sorts[$filters['sort'] ?? 'name'] ?? $sorts['name'];
         $direction = ($filters['direction'] ?? '') === 'desc' ? 'DESC' : 'ASC';
-        $sql = 'SELECT p.*, c.name AS category_name, s.name AS supplier_name FROM products p
+        $sql = 'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label
+                FROM products p
                 LEFT JOIN categories c ON c.id = p.category_id
-                LEFT JOIN suppliers s ON s.id = p.supplier_id';
+                LEFT JOIN suppliers s ON s.id = p.supplier_id
+                LEFT JOIN item_types t ON t.id = p.item_type_id';
         if ($where !== []) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
@@ -92,9 +94,11 @@ final class ProductRepository
     public function find(int $id): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT p.*, c.name AS category_name, s.name AS supplier_name FROM products p
+            'SELECT p.*, c.name AS category_name, s.name AS supplier_name, t.label AS item_type_label
+             FROM products p
              LEFT JOIN categories c ON c.id = p.category_id
              LEFT JOIN suppliers s ON s.id = p.supplier_id
+             LEFT JOIN item_types t ON t.id = p.item_type_id
              WHERE p.id = :id AND p.business_id = :business_id'
         );
         $statement->execute(['id' => $id, 'business_id' => $this->businessId]);
@@ -121,10 +125,11 @@ final class ProductRepository
 
     public function create(array $product): int
     {
+        $product = $this->completeProduct($product);
         $this->validateReferences($product);
         $statement = $this->pdo->prepare(
-            'INSERT INTO products (business_id, name, sku, description, price_cents, cost_price_cents, quantity, min_stock_level, category_id, supplier_id)
-             VALUES (:business_id, :name, :sku, :description, :price_cents, :cost_price_cents, :quantity, :min_stock_level, :category_id, :supplier_id)'
+            'INSERT INTO products (business_id, name, sku, description, price_cents, cost_price_cents, quantity, min_stock_level, category_id, supplier_id, item_type_id)
+             VALUES (:business_id, :name, :sku, :description, :price_cents, :cost_price_cents, :quantity, :min_stock_level, :category_id, :supplier_id, :item_type_id)'
         );
         $statement->execute(['business_id' => $this->businessId] + $this->completeProduct($product));
 
@@ -133,8 +138,8 @@ final class ProductRepository
 
     public function update(int $id, array $product): bool
     {
-        $this->validateReferences($product);
         $product = $this->completeProduct($product);
+        $this->validateReferences($product);
         $product['id'] = $id;
         $product['business_id'] = $this->businessId;
         $product['updated_at'] = gmdate('Y-m-d H:i:s');
@@ -142,7 +147,7 @@ final class ProductRepository
             'UPDATE products
              SET name = :name, sku = :sku, description = :description,
                  price_cents = :price_cents, cost_price_cents = :cost_price_cents,
-                 category_id = :category_id, supplier_id = :supplier_id, quantity = :quantity,
+                 category_id = :category_id, supplier_id = :supplier_id, item_type_id = :item_type_id, quantity = :quantity,
                  min_stock_level = :min_stock_level, updated_at = :updated_at
              WHERE id = :id AND business_id = :business_id'
         );
@@ -253,12 +258,30 @@ final class ProductRepository
         $product['cost_price_cents'] ??= 0;
         $product['category_id'] = $product['category_id'] ?? null;
         $product['supplier_id'] = $product['supplier_id'] ?? null;
+        if (!array_key_exists('item_type_id', $product) || $product['item_type_id'] === null) {
+            $defaultType = $this->pdo->prepare(
+                "SELECT id FROM item_types
+                 WHERE business_id = :business_id AND type_key = 'product' AND enabled = 1"
+            );
+            $defaultType->execute(['business_id' => $this->businessId]);
+            $product['item_type_id'] = $defaultType->fetchColumn();
+            $product['item_type_id'] = $product['item_type_id'] === false ? null : (int) $product['item_type_id'];
+        }
 
         return $product;
     }
 
     private function validateReferences(array $product): void
     {
+        if (($product['item_type_id'] ?? null) !== null) {
+            $statement = $this->pdo->prepare(
+                'SELECT 1 FROM item_types WHERE id = :id AND business_id = :business_id AND enabled = 1'
+            );
+            $statement->execute(['id' => $product['item_type_id'], 'business_id' => $this->businessId]);
+            if ($statement->fetchColumn() === false) {
+                throw new DomainException('O tipo de artigo selecionado não pertence à empresa ativa ou está inativo.');
+            }
+        }
         foreach (['category_id' => 'categories', 'supplier_id' => 'suppliers'] as $field => $table) {
             if (($product[$field] ?? null) === null) {
                 continue;

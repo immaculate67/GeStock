@@ -56,6 +56,29 @@ final class IndustryTemplateService
             'setting_key' => 'industry_configuration',
             'setting_value' => json_encode($decoded, JSON_THROW_ON_ERROR),
         ]);
+        $catalogTablesReady = (int) $pdo->query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+             AND name IN ('item_types', 'business_branches')"
+        )->fetchColumn() === 2;
+        if ($catalogTablesReady) {
+            $type = $pdo->prepare(
+                'INSERT OR IGNORE INTO item_types (business_id, type_key, label, stock_tracked)
+                 VALUES (:business_id, :type_key, :label, :stock_tracked)'
+            );
+            foreach ([['product', 'Produto', 1], ['service', 'Serviço', 0], ['resource', 'Recurso', 0]] as $itemType) {
+                $type->execute([
+                    'business_id' => $businessId,
+                    'type_key' => $itemType[0],
+                    'label' => $itemType[1],
+                    'stock_tracked' => $itemType[2],
+                ]);
+            }
+            $branch = $pdo->prepare(
+                'INSERT OR IGNORE INTO business_branches (business_id, name, code)
+                 VALUES (:business_id, \'Local principal\', \'MAIN\')'
+            );
+            $branch->execute(['business_id' => $businessId]);
+        }
     }
 
     public static function definitions(): array

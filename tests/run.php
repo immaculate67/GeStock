@@ -6,6 +6,7 @@ require_once dirname(__DIR__) . '/app/ProductRepository.php';
 require_once dirname(__DIR__) . '/app/ProductValidator.php';
 require_once dirname(__DIR__) . '/app/BusinessRepository.php';
 require_once dirname(__DIR__) . '/app/BusinessService.php';
+require_once dirname(__DIR__) . '/app/BusinessConfigurationService.php';
 require_once dirname(__DIR__) . '/app/BusinessCalendar.php';
 require_once dirname(__DIR__) . '/app/InventoryService.php';
 require_once dirname(__DIR__) . '/app/BusinessStatisticsService.php';
@@ -40,7 +41,35 @@ try {
     $assert(Database::connect($databasePath)->query('SELECT COUNT(*) FROM products')->fetchColumn() === 0, 'database initialisation is repeatable without deleting data');
     $pdo->exec("INSERT INTO businesses (name, industry_key) VALUES ('Empresa de teste', 'custom')");
     $businessId = (int) $pdo->lastInsertId();
+    IndustryTemplateService::apply($pdo, $businessId, 'custom');
     $repository = new ProductRepository($pdo, $businessId);
+    $assert(
+        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 4
+        && (int) $pdo->query('SELECT COUNT(*) FROM item_types WHERE business_id = ' . $businessId)->fetchColumn() === 3
+        && (int) $pdo->query('SELECT COUNT(*) FROM business_branches WHERE business_id = ' . $businessId)->fetchColumn() === 1,
+        'catalog architecture creates isolated item types and a default branch for each business'
+    );
+    $configuration = new BusinessConfigurationService($pdo, $businessId);
+    $branchId = $configuration->saveBranch('Loja Centro', 'CENTRO', 'Rua Principal, 1');
+    $assert(
+        $branchId > 0
+        && count($configuration->branches()) === 2
+        && count($configuration->itemTypes()) === 3,
+        'business configuration can add a branch and list saleable item types'
+    );
+    $serviceType = $pdo->query("SELECT id FROM item_types WHERE business_id = {$businessId} AND type_key = 'service'")->fetchColumn();
+    $configuration->setItemTypeEnabled((int) $serviceType, false);
+    $inactiveTypeRejected = false;
+    try {
+        $repository->create([
+            'name' => 'Serviço inativo', 'sku' => 'INACTIVE-1', 'description' => null,
+            'price_cents' => 1000, 'cost_price_cents' => 0, 'quantity' => 0, 'min_stock_level' => 0,
+            'category_id' => null, 'supplier_id' => null, 'item_type_id' => (int) $serviceType,
+        ]);
+    } catch (DomainException) {
+        $inactiveTypeRejected = true;
+    }
+    $assert($inactiveTypeRejected, 'item types cannot be used after being disabled');
 
     $failedMigrationPdo = new PDO('sqlite:' . $failedMigrationPath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $failedMigrationPdo->exec('CREATE TABLE businesses (id INTEGER PRIMARY KEY)');
