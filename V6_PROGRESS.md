@@ -232,3 +232,21 @@ Not implemented or not yet verified against the complete specification:
   variant editing and cancellation, restaurant and manufacturing-specific
   interfaces, central global search, branch stock-location enforcement,
   supplier/customer purchase-history views and the final responsive UI review.
+
+## Checkpoint V6.4 congelado
+
+- Data do checkpoint: 2026-11-19.
+- Implementation work is stopped; no feature work was performed for this
+  checkpoint.
+- Current branch: `feat/gestock-v6`.
+- Current HEAD: `13ce53c V6.4`.
+- Working state: no staged changes; `V6_PROGRESS.md` is unstaged and
+  `V6_CONTINUATION.md` is untracked.
+- Latest implemented schema migration: version 7.
+- Verification before checkpoint freeze: `php tests/run.php` passed 117 checks;
+  PHP syntax, JavaScript syntax and `git diff --check` passed.
+- Complete continuation record: `V6_CONTINUATION.md`.
+- This checkpoint does not represent completion of the full master specification.
+- Exact next priority: complete the progressive business creation/custom
+  configuration wizard and pre-creation review, then continue purchases,
+  branch transfers, category bulk workflows and uniform permission enforcement.
