@@ -59,8 +59,18 @@ final class BusinessConfigurationService
                 'code' => $code,
                 'address' => $address === '' ? null : $address,
             ]);
-
-            return (int) $this->pdo->lastInsertId();
+            $branchId = (int) $this->pdo->lastInsertId();
+            $location = $this->pdo->prepare(
+                'INSERT INTO stock_locations (business_id, branch_id, name, code)
+                 VALUES (:business_id, :branch_id, :name, :code)'
+            );
+            $location->execute([
+                'business_id' => $this->businessId,
+                'branch_id' => $branchId,
+                'name' => 'Stock principal',
+                'code' => 'PRINCIPAL',
+            ]);
+            return $branchId;
         }
 
         $query = $this->pdo->prepare(

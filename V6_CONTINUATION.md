@@ -1,4 +1,4 @@
-# GeStock V6 — ponto de continuação V6.4
+# GeStock V6 — ponto de continuação V6.7
 
 ## 1. Visão geral do projeto
 
@@ -190,7 +190,7 @@ específicos da especificação mestra.
 
 ## 7. Versão atual da base de dados
 
-A migração máxima aplicada pelo suite isolado é a versão **7**.
+A migração máxima aplicada pelo suite isolado é a versão **8**.
 
 Resumo das versões conhecidas:
 
@@ -202,6 +202,8 @@ Resumo das versões conhecidas:
 - Versão 6: referências de variante em vendas e movimentos.
 - Versão 7: auditoria, permissões, locais de membros, compras, operações,
   hotéis, passes e localizações de stock.
+- Versão 8: receções parciais, devoluções e histórico de recibos/devoluções
+  em linhas de encomenda.
 
 Não foram usados comandos contra `storage/gestock.sqlite` para migrar ou alterar
 a base ativa durante este checkpoint.
@@ -296,17 +298,19 @@ vendas históricas, stock, hotelaria, passes, compras e auditoria.
 
 ## 12. Próximas prioridades exatas
 
-1. Fechar o wizard completo de criação/configuração de negócio e adicionar revisão
-   antes da criação.
-2. Completar compras: receções parciais, cancelamento, devolução e UI multi-linha.
+1. Concluído: wizard progressivo completo de criação/configuração de negócio,
+   perfil fiscal/localização e revisão pré-criação.
+2. Concluído: compras — receções parciais, cancelamento, devolução, histórico
+   de linhas e UI multi-linha.
 3. Completar transferências de stock por filial/local.
-4. Completar categoria: arquivo/restauro, mover, merge e operações em massa.
-5. Converter permissões em enforcement uniforme em todas as rotas mutáveis.
-6. Cobrir todas as mutações relevantes com auditoria append-only.
-7. Implementar menus/restaurante, marcações/salões e produção de forma conectada.
-8. Implementar alugueres/ativos, fidelização e clientes/fornecedores avançados.
-9. Implementar pesquisa global permission-aware e relatórios por setor.
-10. Executar revisão UI, acessibilidade, mobile e suite final.
+4. Concluído: transferências de stock por filial/local.
+5. Completar categoria: arquivo/restauro, mover, merge e operações em massa.
+6. Converter permissões em enforcement uniforme em todas as rotas mutáveis.
+7. Cobrir todas as mutações relevantes com auditoria append-only.
+8. Implementar menus/restaurante, marcações/salões e produção de forma conectada.
+9. Implementar alugueres/ativos, fidelização e clientes/fornecedores avançados.
+10. Implementar pesquisa global permission-aware e relatórios por setor.
+11. Executar revisão UI, acessibilidade, mobile e suite final.
 
 ## 13. Comandos exatos para retomar
 
@@ -358,6 +362,60 @@ durante testes sem decisão explícita. O suite usa bases temporárias.
 - Produção precisa de matérias-primas e produção/acabados.
 - Reports devem usar datas locais de Lisboa e dados reais.
 
+## 16. Checkpoint V6.6 retoma o wizard
+
+- Data: 2026-11-20.
+- Branch: `feat/gestock-v6`.
+- HEAD preservado: `0dee05d V6.4.2`.
+- Estado: alterações deste checkpoint ainda não confirmadas; não foram usadas
+  operações destrutivas e a base ativa não foi modificada.
+- Concluído: assistente progressivo de quatro etapas, revisão pré-criação,
+  persistência de moeda, taxa fiscal, timezone, identidade, morada, telefone,
+  NIF e local principal, mais edição correspondente nas definições.
+- Concluído pelo servidor: normalização e validação do perfil, atualização
+  transacional do negócio/local e testes isolados de criação assistida.
+- Verificação: 118 testes isolados passaram; PHP syntax, JavaScript syntax e
+  `git diff --check` passaram.
+- Próximo bloqueio exato: compras — receções parciais, cancelamento, devolução,
+  linhas múltiplas e histórico avançado; só depois iniciar transferências
+  entre filiais e locais.
+
+## 17. Checkpoint V6.7 concluiu compras
+
+- Data: 2026-11-20.
+- Branch: `feat/gestock-v6`.
+- HEAD preservado: `0dee05d V6.4.2`.
+- Estado: a implementação nova permanece não confirmada; não foi usado git
+  reset/revert/checkout e a base ativa não foi modificada.
+- Migração aditiva 8: quantidade recebida/devolvida por linha, recibos e
+  devoluções de compra.
+- Concluído: receção completa/parcial, cancelamento pré-receção, devolução
+  transacional com atualização de stock, UI de linhas múltiplas e cobertura
+  isolada de variantes de stock.
+- Verificação: 119 testes isolados passaram; PHP syntax, JavaScript syntax e
+  `git diff --check` passaram.
+- Próximo bloqueio exato: completar transferências de stock por filial/local,
+  incluindo criação, aprovação/execução, movimentos antes/depois e isolamento.
+
+## 18. Checkpoint V6.8 concluiu transferências
+
+- Data: 2026-11-20.
+- Branch: `feat/gestock-v6`.
+- HEAD preservado: `0dee05d V6.4.2`.
+- Estado: implementação nova permanece não confirmada; não foi usado git reset,
+  revert ou checkout e a base ativa não foi modificada.
+- Migração aditiva 9: saldos por filial/localização, rascunhos e histórico de
+  transferências, além de referências de origem/destino nos movimentos.
+- Concluído: criação de rascunhos, execução/cancelamento transacional,
+  isolamento por negócio, linhas produto/variante, saldo por localização e
+  histórico visível na interface de stock.
+- As filiais novas criadas nas definições recebem automaticamente uma
+  localização principal de stock.
+- Verificação: 122 testes isolados passaram; PHP syntax, JavaScript syntax e
+  `git diff --check` passaram.
+- Próximo bloqueio exato: categorias — arquivo/restauro, mover, merge e
+  operações em massa; só depois enforcement uniforme de permissões e auditoria.
+
 NEXT SESSION — EXACT CONTINUATION INSTRUCTIONS
 
 O próximo Copilot Agent deve:
@@ -372,10 +430,10 @@ O próximo Copilot Agent deve:
 7. Não commitar nem fazer push salvo autorização explícita.
 8. Preservar os ficheiros unstaged e untracked finais: `V6_PROGRESS.md` e
    `V6_CONTINUATION.md`.
-9. Retomar pela prioridade exata: wizard completo de criação/configuração de negócio
-   e review pré-criação.
-10. Depois continuar compras, transferências, categorias e enforcement de
-    permissões/auditoria como próximos blocos conectados.
+9. Estado retomado: wizard completo e compras parciais/conclusão já estão
+   implementados.
+10. Retomar pela prioridade exata: categorias — arquivo/restauro, mover, merge
+    e operações em massa; depois enforcement uniforme de permissões/auditoria.
 11. Implementar workflows completos e visíveis ao utilizador; não declarar
     módulos completos por existência de tabelas ou serviços isolados.
 12. Executar os testes temporários, syntax checks, JavaScript check e

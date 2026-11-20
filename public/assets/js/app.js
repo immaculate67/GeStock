@@ -153,3 +153,84 @@ if (saleLines && addSaleLine) {
         updateTotal();
     }
 }
+
+const businessWizard = document.querySelector('[data-business-wizard]');
+if (businessWizard) {
+    let currentStep = 1;
+    const steps = Array.from(businessWizard.querySelectorAll('[data-wizard-step]'));
+    const progress = Array.from(document.querySelectorAll('[data-wizard-progress]'));
+    const backButton = businessWizard.querySelector('[data-wizard-back]');
+    const nextButton = businessWizard.querySelector('[data-wizard-next]');
+    const reviewButton = businessWizard.querySelector('[data-wizard-review]');
+    const templateSelect = businessWizard.querySelector('#industry_key');
+
+    const showStep = (step) => {
+        currentStep = step;
+        steps.forEach((element) => {
+            element.hidden = Number(element.dataset.wizardStep) !== step;
+        });
+        progress.forEach((element) => {
+            const elementStep = Number(element.dataset.wizardProgress);
+            element.classList.toggle('is-active', elementStep === step);
+            element.classList.toggle('is-complete', elementStep < step);
+        });
+        if (backButton) backButton.hidden = step === 1;
+        if (nextButton) nextButton.hidden = step === steps.length;
+        if (reviewButton) reviewButton.hidden = step !== steps.length;
+        if (step === 1) businessWizard.querySelector('#name')?.focus();
+    };
+
+    nextButton?.addEventListener('click', () => {
+        const currentElement = steps[currentStep - 1];
+        const fields = currentElement?.querySelectorAll('input, select');
+        const invalid = Array.from(fields || []).find((field) => !field.checkValidity());
+        if (invalid) {
+            invalid.reportValidity();
+            return;
+        }
+        showStep(Math.min(currentStep + 1, steps.length));
+    });
+    backButton?.addEventListener('click', () => showStep(Math.max(currentStep - 1, 1)));
+    templateSelect?.addEventListener('change', () => {
+        const selected = templateSelect.options[templateSelect.selectedIndex];
+        let defaults = [];
+        try {
+            defaults = JSON.parse(selected?.dataset.defaultModules || '[]');
+        } catch (error) {
+            defaults = [];
+        }
+        businessWizard.querySelectorAll('input[name="modules[]"]').forEach((checkbox) => {
+            checkbox.checked = defaults.includes(checkbox.value);
+        });
+    });
+    showStep(1);
+}
+
+const purchaseLines = document.querySelector('[data-purchase-lines]');
+const addPurchaseLine = document.querySelector('[data-add-purchase-line]');
+if (purchaseLines && addPurchaseLine) {
+    purchaseLines.addEventListener('change', (event) => {
+        const select = event.target.closest('select[name="product_id[]"]');
+        if (!select) return;
+        const option = select.options[select.selectedIndex];
+        const hidden = select.closest('.purchase-line')?.querySelector('input[name="variant_id[]"]');
+        if (hidden) hidden.value = option?.dataset.variant || '';
+    });
+    addPurchaseLine.addEventListener('click', () => {
+        const template = purchaseLines.querySelector('.purchase-line');
+        if (!template) return;
+        const clone = template.cloneNode(true);
+        const index = purchaseLines.children.length;
+        clone.querySelectorAll('[id]').forEach((element) => {
+            element.id = `${element.id}-${index}`;
+            const label = clone.querySelector(`label[for="${element.id.replace(`-${index}`, '')}"]`);
+            if (label) label.htmlFor = element.id;
+        });
+        clone.querySelectorAll('input, select').forEach((element) => {
+            if (element.tagName === 'SELECT') element.selectedIndex = 0;
+            if (element.type === 'number') element.value = '1';
+            if (element.name === 'unit_cost[]') element.value = '0,00';
+        });
+        purchaseLines.append(clone);
+    });
+}

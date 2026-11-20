@@ -76,6 +76,8 @@ function movementTypeLabel(string $type): string
         'correction' => 'Correção',
         'sale' => 'Venda',
         'sale_return' => 'Reposição por anulação',
+        'transfer_out' => 'Transferência de saída',
+        'transfer_in' => 'Transferência de entrada',
         default => 'Outro',
     };
 }

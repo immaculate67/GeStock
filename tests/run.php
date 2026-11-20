@@ -13,6 +13,7 @@ require_once dirname(__DIR__) . '/app/BusinessService.php';
 require_once dirname(__DIR__) . '/app/BusinessConfigurationService.php';
 require_once dirname(__DIR__) . '/app/BusinessCalendar.php';
 require_once dirname(__DIR__) . '/app/InventoryService.php';
+require_once dirname(__DIR__) . '/app/StockTransferService.php';
 require_once dirname(__DIR__) . '/app/BusinessStatisticsService.php';
 require_once dirname(__DIR__) . '/app/Auth.php';
 require_once dirname(__DIR__) . '/app/helpers.php';
@@ -48,7 +49,7 @@ try {
     IndustryTemplateService::apply($pdo, $businessId, 'custom');
     $repository = new ProductRepository($pdo, $businessId);
     $assert(
-        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 7
+        (int) $pdo->query('SELECT MAX(version) FROM schema_migrations')->fetchColumn() === 9
         && (int) $pdo->query('SELECT COUNT(*) FROM item_types WHERE business_id = ' . $businessId)->fetchColumn() === 3
         && (int) $pdo->query('SELECT COUNT(*) FROM business_branches WHERE business_id = ' . $businessId)->fetchColumn() === 1,
         'catalog architecture creates isolated item types and a default branch for each business'
@@ -142,9 +143,36 @@ try {
     $stockAfterPurchase = (int) $pdo->query("SELECT quantity FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
     $costAfterPurchase = (int) $pdo->query("SELECT cost_price_cents FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
     $assert($purchaseResult['status'] === 'received' && $stockAfterPurchase === 7 && $costAfterPurchase === 1250, 'purchase orders receive stock and update the supplier cost snapshot');
+    $partialPurchaseId = $purchase->create([
+        'supplier_id' => (string) $supplierRecordId,
+        'order_number' => 'OC-PARCIAL',
+        'notes' => 'Receção parcial',
+        'branch_id' => null,
+        'product_id' => [(string) $purchaseProductId],
+        'variant_id' => [''],
+        'quantity' => ['5'],
+        'unit_cost' => ['10,00'],
+    ], 0);
+    $partialBefore = $purchase->find($partialPurchaseId);
+    $partialLineId = (int) $partialBefore['items'][0]['id'];
+    $purchase->receive($partialPurchaseId, 0, [(string) $partialLineId => 2]);
+    $partialAfter = $purchase->find($partialPurchaseId);
+    $stockAfterPartial = (int) $pdo->query("SELECT quantity FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
+    $purchase->returnItems($partialPurchaseId, [(string) $partialLineId => 1], 'Artigo danificado', 0);
+    $stockAfterReturn = (int) $pdo->query("SELECT quantity FROM products WHERE id = {$purchaseProductId}")->fetchColumn();
+    $assert(
+        $partialAfter['status'] === 'partially_received'
+        && $stockAfterPartial === 9
+        && $stockAfterReturn === 8,
+        'purchase orders support partial receipt and tracked stock returns'
+    );
     $pdo->exec("DELETE FROM stock_movements WHERE business_id = {$businessId} AND product_id = {$purchaseProductId}");
+    $pdo->exec("DELETE FROM purchase_receipts WHERE business_id = {$businessId}");
+    $pdo->exec("DELETE FROM purchase_returns WHERE business_id = {$businessId}");
     $pdo->exec("DELETE FROM purchase_order_items WHERE business_id = {$businessId} AND purchase_order_id = {$purchaseId}");
+    $pdo->exec("DELETE FROM purchase_order_items WHERE business_id = {$businessId} AND purchase_order_id = {$partialPurchaseId}");
     $pdo->exec("DELETE FROM purchase_orders WHERE id = {$purchaseId} AND business_id = {$businessId}");
+    $pdo->exec("DELETE FROM purchase_orders WHERE id = {$partialPurchaseId} AND business_id = {$businessId}");
     $pdo->exec("DELETE FROM products WHERE id = {$purchaseProductId} AND business_id = {$businessId}");
     $pdo->exec("DELETE FROM suppliers WHERE id = {$supplierRecordId} AND business_id = {$businessId}");
     $configuration = new BusinessConfigurationService($pdo, $businessId);
@@ -499,6 +527,34 @@ try {
         $configuredModules->fetchAll(PDO::FETCH_COLUMN) === ['customers', 'sales', 'settings', 'users'],
         'business creation applies only selected modules and keeps users and settings available'
     );
+    $wizardBusinessId = $businessService->create(
+        $userId,
+        'Negócio assistido',
+        'custom',
+        $businessId,
+        ['catalog', 'inventory', 'sales'],
+        [
+            'currency' => 'EUR',
+            'tax_rate' => '23',
+            'timezone' => 'Europe/Lisbon',
+            'address' => 'Rua Principal 1',
+            'phone' => '210000000',
+            'tax_id' => 'PT123456789',
+            'branch_name' => 'Loja Centro',
+            'branch_code' => 'CENTRO',
+            'branch_address' => 'Rua Principal 1',
+        ]
+    );
+    $wizardProfile = $businessService->profile($wizardBusinessId);
+    $assert(
+        $wizardProfile['timezone'] === 'Europe/Lisbon'
+        && $wizardProfile['currency'] === 'EUR'
+        && $wizardProfile['tax_rate'] === '23'
+        && $wizardProfile['branch_name'] === 'Loja Centro'
+        && $wizardProfile['branch_code'] === 'CENTRO'
+        && $wizardProfile['tax_id'] === 'PT123456789',
+        'progressive business creation persists fiscal, timezone and principal branch profile settings'
+    );
     $businessCountBeforeInvalidModule = (int) $pdo->query('SELECT COUNT(*) FROM businesses')->fetchColumn();
     $invalidModuleRejected = false;
     try {
@@ -827,6 +883,47 @@ try {
         $crossTenantAttributeRejected = true;
     }
     $assert($crossTenantAttributeRejected, 'custom attribute values remain isolated by business');
+
+    $transferConfiguration = new BusinessConfigurationService($pdo, $businessId);
+    $transferConfiguration->saveBranch('Loja Sul', 'SUL');
+    $transferSourceLocation = (int) $pdo->query(
+        'SELECT id FROM stock_locations WHERE business_id = ' . $businessId . ' ORDER BY id LIMIT 1'
+    )->fetchColumn();
+    $transferDestinationLocation = (int) $pdo->query(
+        'SELECT id FROM stock_locations WHERE business_id = ' . $businessId . ' ORDER BY id DESC LIMIT 1'
+    )->fetchColumn();
+    $transfers = new StockTransferService($pdo, $businessId);
+    $transferId = $transfers->createTransfer([
+        'source_location_id' => (string) $transferSourceLocation,
+        'destination_location_id' => (string) $transferDestinationLocation,
+        'reference' => 'TR-TEST-1',
+        'notes' => 'Transferência de teste',
+        'lines' => [['product_id' => (string) $saleProductId, 'variant_id' => '', 'quantity' => '1']],
+    ], $userId);
+    $draftTransfer = $transfers->transfers()[0];
+    $assert($transferId > 0 && $draftTransfer['status'] === 'draft', 'stock transfers can be created as tenant-isolated drafts');
+    $beforeSource = (int) $pdo->query(
+        'SELECT quantity FROM products WHERE id = ' . $saleProductId . ' AND business_id = ' . $businessId
+    )->fetchColumn();
+    $transfers->completeTransfer($transferId, $userId);
+    $afterSource = (int) $pdo->query(
+        'SELECT quantity FROM stock_balances WHERE business_id = ' . $businessId
+        . ' AND location_id = ' . $transferSourceLocation . ' AND product_id = ' . $saleProductId
+        . ' AND variant_id IS NULL'
+    )->fetchColumn();
+    $destinationQuantity = (int) $pdo->query(
+        'SELECT quantity FROM stock_balances WHERE business_id = ' . $businessId
+        . ' AND location_id = ' . $transferDestinationLocation . ' AND product_id = ' . $saleProductId
+        . ' AND variant_id IS NULL'
+    )->fetchColumn();
+    $assert(
+        $afterSource === $beforeSource - 1 && $destinationQuantity === 1,
+        'executing a transfer moves stock balances between different branch locations transactionally'
+    );
+    $completedRows = $pdo->query(
+        'SELECT COUNT(*) FROM stock_transfers WHERE business_id = ' . $businessId . ' AND status = \'completed\''
+    )->fetchColumn();
+    $assert((int) $completedRows === 1, 'completed stock transfers are preserved in history');
 
     $_SESSION = [];
     $csrf = csrfToken();

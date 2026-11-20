@@ -13,6 +13,7 @@ require_once __DIR__ . '/BusinessService.php';
 require_once __DIR__ . '/BusinessConfigurationService.php';
 require_once __DIR__ . '/BusinessCalendar.php';
 require_once __DIR__ . '/InventoryService.php';
+require_once __DIR__ . '/StockTransferService.php';
 require_once __DIR__ . '/BusinessStatisticsService.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/helpers.php';

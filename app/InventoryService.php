@@ -514,7 +514,7 @@ final class InventoryService
             $where[] = 'm.product_id = :product_id';
             $parameters['product_id'] = (int) $filters['product_id'];
         }
-        if (in_array($filters['type'] ?? '', ['in', 'out', 'correction', 'sale', 'sale_return'], true)) {
+        if (in_array($filters['type'] ?? '', ['in', 'out', 'correction', 'sale', 'sale_return', 'transfer_out', 'transfer_in'], true)) {
             $where[] = 'm.movement_type = :type';
             $parameters['type'] = $filters['type'];
         }

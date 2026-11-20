@@ -155,7 +155,7 @@ final class PurchaseService
         }
     }
 
-    public function receive(int $orderId, int $actorUserId): void
+    public function receive(int $orderId, int $actorUserId, ?array $quantities = null): void
     {
         $this->pdo->beginTransaction();
         try {
@@ -181,81 +181,74 @@ final class PurchaseService
                  (business_id, product_id, variant_id, movement_type, quantity, stock_before, stock_after, reason, created_by)
                  VALUES (:business_id, :product_id, :variant_id, \'in\', :quantity, :before, :after, :reason, :actor)'
             );
+            $updateItem = $this->pdo->prepare(
+                'UPDATE purchase_order_items SET received_quantity = :received
+                 WHERE id = :id AND business_id = :business_id'
+            );
+            $receipt = $this->pdo->prepare(
+                'INSERT INTO purchase_receipts
+                 (business_id, purchase_order_id, purchase_order_item_id, quantity, unit_cost_cents, created_by)
+                 VALUES (:business_id, :order_id, :item_id, :quantity, :cost, :actor)'
+            );
+            $receivedAny = false;
+            $hasRemaining = false;
             foreach ($items->fetchAll() as $item) {
-                $quantity = (int) $item['quantity'];
-                if ($item['variant_id'] !== null) {
-                    $selectVariant = $this->pdo->prepare(
-                        'SELECT quantity, cost_price_cents FROM product_variants
-                         WHERE id = :id AND business_id = :business_id'
+                $lineId = (int) $item['id'];
+                $remaining = (int) $item['quantity'] - (int) $item['received_quantity'];
+                $requested = $quantities === null ? $remaining : ($quantities[(string) $lineId] ?? $quantities[$lineId] ?? 0);
+                $quantity = $requested === null ? 0 : filter_var($requested, FILTER_VALIDATE_INT);
+                if ($remaining > 0 && $quantities !== null && $quantity === false) {
+                    throw new InvalidArgumentException('As quantidades recebidas têm de ser números inteiros.');
+                }
+                if ($quantity === false) {
+                    $quantity = 0;
+                }
+                if ($quantity < 0 || $quantity > $remaining) {
+                    throw new InvalidArgumentException('A quantidade recebida excede a quantidade em falta.');
+                }
+                if ($quantity > 0) {
+                    $receivedAny = true;
+                    $this->addPurchaseReceiptStock(
+                        $movement,
+                        (int) $item['product_id'],
+                        $item['variant_id'] !== null ? (int) $item['variant_id'] : null,
+                        $quantity,
+                        (int) $item['unit_cost_cents'],
+                        $orderId,
+                        $actorUserId
                     );
-                    $selectVariant->execute(['id' => (int) $item['variant_id'], 'business_id' => $this->businessId]);
-                    $variant = $selectVariant->fetch();
-                    if ($variant === false) {
-                        throw new DomainException('A variante recebida já não existe.');
-                    }
-                    $before = (int) $variant['quantity'];
-                    $after = $before + $quantity;
-                    if ($after > 2147483647) {
-                        throw new DomainException('O stock da variante excederia o limite permitido.');
-                    }
-                    $updateVariant = $this->pdo->prepare(
-                        'UPDATE product_variants SET quantity = :quantity, cost_price_cents = :cost, updated_at = CURRENT_TIMESTAMP
-                         WHERE id = :id AND business_id = :business_id'
-                    );
-                    $updateVariant->execute([
-                        'quantity' => $after,
-                        'cost' => (int) $item['unit_cost_cents'],
-                        'id' => (int) $item['variant_id'],
+                    $newReceived = (int) $item['received_quantity'] + $quantity;
+                    $updateItem->execute([
+                        'received' => $newReceived,
+                        'id' => $lineId,
                         'business_id' => $this->businessId,
                     ]);
-                    $movement->execute([
+                    $receipt->execute([
                         'business_id' => $this->businessId,
-                        'product_id' => (int) $item['product_id'],
-                        'variant_id' => (int) $item['variant_id'],
+                        'order_id' => $orderId,
+                        'item_id' => $lineId,
                         'quantity' => $quantity,
-                        'before' => $before,
-                        'after' => $after,
-                        'reason' => 'Receção da encomenda #' . $orderId,
-                        'actor' => $actorUserId > 0 ? $actorUserId : null,
-                    ]);
-                } else {
-                    $selectProduct = $this->pdo->prepare(
-                        'SELECT quantity FROM products WHERE id = :id AND business_id = :business_id'
-                    );
-                    $selectProduct->execute(['id' => (int) $item['product_id'], 'business_id' => $this->businessId]);
-                    $before = (int) $selectProduct->fetchColumn();
-                    $after = $before + $quantity;
-                    if ($after > 2147483647) {
-                        throw new DomainException('O stock do produto excederia o limite permitido.');
-                    }
-                    $updateProduct = $this->pdo->prepare(
-                        'UPDATE products SET quantity = :quantity, cost_price_cents = :cost, updated_at = CURRENT_TIMESTAMP
-                         WHERE id = :id AND business_id = :business_id'
-                    );
-                    $updateProduct->execute([
-                        'quantity' => $after,
                         'cost' => (int) $item['unit_cost_cents'],
-                        'id' => (int) $item['product_id'],
-                        'business_id' => $this->businessId,
-                    ]);
-                    $movement->execute([
-                        'business_id' => $this->businessId,
-                        'product_id' => (int) $item['product_id'],
-                        'variant_id' => null,
-                        'quantity' => $quantity,
-                        'before' => $before,
-                        'after' => $after,
-                        'reason' => 'Receção da encomenda #' . $orderId,
                         'actor' => $actorUserId > 0 ? $actorUserId : null,
                     ]);
                 }
+                if ((int) $item['received_quantity'] + $quantity < (int) $item['quantity']) {
+                    $hasRemaining = true;
+                }
+            }
+            if (!$receivedAny) {
+                throw new DomainException('Indique pelo menos uma quantidade a receber.');
             }
             $complete = $this->pdo->prepare(
-                "UPDATE purchase_orders
-                 SET status = 'received', received_at = CURRENT_TIMESTAMP
-                 WHERE id = :id AND business_id = :business_id"
+                'UPDATE purchase_orders
+                 SET status = :status, received_at = CASE WHEN :status = \'received\' THEN CURRENT_TIMESTAMP ELSE received_at END
+                 WHERE id = :id AND business_id = :business_id'
             );
-            $complete->execute(['id' => $orderId, 'business_id' => $this->businessId]);
+            $complete->execute([
+                'status' => $hasRemaining ? 'partially_received' : 'received',
+                'id' => $orderId,
+                'business_id' => $this->businessId,
+            ]);
             $this->pdo->commit();
         } catch (Throwable $exception) {
             if ($this->pdo->inTransaction()) {
@@ -263,6 +256,266 @@ final class PurchaseService
             }
             throw $exception;
         }
+    }
+
+    public function cancel(int $orderId, int $actorUserId): void
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $order = $this->pdo->prepare(
+                "SELECT status FROM purchase_orders WHERE id = :id AND business_id = :business_id"
+            );
+            $order->execute(['id' => $orderId, 'business_id' => $this->businessId]);
+            $row = $order->fetch();
+            if ($row === false) {
+                throw new DomainException('A encomenda não pertence ao negócio ativo.');
+            }
+            if (!in_array($row['status'], ['draft', 'ordered', 'partially_received'], true)) {
+                throw new DomainException('Esta encomenda já não pode ser cancelada.');
+            }
+            $received = $this->pdo->prepare(
+                'SELECT COUNT(*) FROM purchase_order_items
+                 WHERE purchase_order_id = :order_id AND business_id = :business_id AND received_quantity > 0'
+            );
+            $received->execute(['order_id' => $orderId, 'business_id' => $this->businessId]);
+            if ((int) $received->fetchColumn() > 0) {
+                throw new DomainException('Uma encomenda com receções deve ser devolvida linha a linha antes do cancelamento.');
+            }
+            $cancel = $this->pdo->prepare(
+                "UPDATE purchase_orders SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP
+                 WHERE id = :id AND business_id = :business_id"
+            );
+            $cancel->execute(['id' => $orderId, 'business_id' => $this->businessId]);
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
+    public function returnItems(int $orderId, array $quantities, string $reason, int $actorUserId): void
+    {
+        $reason = trim($reason);
+        $this->pdo->beginTransaction();
+        try {
+            $order = $this->pdo->prepare(
+                "SELECT status FROM purchase_orders WHERE id = :id AND business_id = :business_id"
+            );
+            $order->execute(['id' => $orderId, 'business_id' => $this->businessId]);
+            $row = $order->fetch();
+            if ($row === false) {
+                throw new DomainException('A encomenda não pertence ao negócio ativo.');
+            }
+            if (!in_array($row['status'], ['received', 'partially_received'], true)) {
+                throw new DomainException('Só podem ser devolvidas encomendas recebidas.');
+            }
+            $items = $this->pdo->prepare(
+                'SELECT * FROM purchase_order_items
+                 WHERE purchase_order_id = :order_id AND business_id = :business_id'
+            );
+            $items->execute(['order_id' => $orderId, 'business_id' => $this->businessId]);
+            $movement = $this->pdo->prepare(
+                'INSERT INTO stock_movements
+                 (business_id, product_id, variant_id, movement_type, quantity, stock_before, stock_after, reason, created_by)
+                 VALUES (:business_id, :product_id, :variant_id, \'out\', :quantity, :before, :after, :reason, :actor)'
+            );
+            $updateItem = $this->pdo->prepare(
+                'UPDATE purchase_order_items SET returned_quantity = :returned
+                 WHERE id = :id AND business_id = :business_id'
+            );
+            $return = $this->pdo->prepare(
+                'INSERT INTO purchase_returns
+                 (business_id, purchase_order_id, purchase_order_item_id, quantity, reason, created_by)
+                 VALUES (:business_id, :order_id, :item_id, :quantity, :reason, :actor)'
+            );
+            $returnedAny = false;
+            foreach ($items->fetchAll() as $item) {
+                $lineId = (int) $item['id'];
+                $requested = $quantities[(string) $lineId] ?? $quantities[$lineId] ?? 0;
+                $quantity = filter_var($requested, FILTER_VALIDATE_INT);
+                $available = (int) $item['received_quantity'] - (int) $item['returned_quantity'];
+                if ($quantity === false) {
+                    throw new InvalidArgumentException('As quantidades devolvidas têm de ser números inteiros.');
+                }
+                if ($quantity < 0 || $quantity > $available) {
+                    throw new InvalidArgumentException('A quantidade devolvida excede o recebido líquido.');
+                }
+                if ($quantity === 0) {
+                    continue;
+                }
+                $returnedAny = true;
+                $this->removePurchaseReturnStock(
+                    $movement,
+                    (int) $item['product_id'],
+                    $item['variant_id'] !== null ? (int) $item['variant_id'] : null,
+                    $quantity,
+                    $orderId,
+                    $actorUserId
+                );
+                $updateItem->execute([
+                    'returned' => (int) $item['returned_quantity'] + $quantity,
+                    'id' => $lineId,
+                    'business_id' => $this->businessId,
+                ]);
+                $return->execute([
+                    'business_id' => $this->businessId,
+                    'order_id' => $orderId,
+                    'item_id' => $lineId,
+                    'quantity' => $quantity,
+                    'reason' => $reason === '' ? null : mb_substr($reason, 0, 2000),
+                    'actor' => $actorUserId > 0 ? $actorUserId : null,
+                ]);
+            }
+            if (!$returnedAny) {
+                throw new DomainException('Indique pelo menos uma quantidade a devolver.');
+            }
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
+    private function addPurchaseReceiptStock(
+        PDOStatement $movement,
+        int $productId,
+        ?int $variantId,
+        int $quantity,
+        int $cost,
+        int $orderId,
+        int $actorUserId
+    ): void {
+        if ($variantId !== null) {
+            $select = $this->pdo->prepare(
+                'SELECT quantity FROM product_variants
+                 WHERE id = :id AND product_id = :product_id AND business_id = :business_id'
+            );
+            $select->execute(['id' => $variantId, 'product_id' => $productId, 'business_id' => $this->businessId]);
+            $variant = $select->fetch();
+            if ($variant === false) {
+                throw new DomainException('A variante recebida já não existe.');
+            }
+            $before = (int) $variant['quantity'];
+            $after = $before + $quantity;
+            if ($after > 2147483647) {
+                throw new DomainException('O stock da variante excederia o limite permitido.');
+            }
+            $update = $this->pdo->prepare(
+                'UPDATE product_variants SET quantity = :quantity, cost_price_cents = :cost, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = :id AND business_id = :business_id'
+            );
+            $update->execute([
+                'quantity' => $after,
+                'cost' => $cost,
+                'id' => $variantId,
+                'business_id' => $this->businessId,
+            ]);
+            $movement->execute([
+                'business_id' => $this->businessId,
+                'product_id' => $productId,
+                'variant_id' => $variantId,
+                'quantity' => $quantity,
+                'before' => $before,
+                'after' => $after,
+                'reason' => 'Receção parcial da encomenda #' . $orderId,
+                'actor' => $actorUserId > 0 ? $actorUserId : null,
+            ]);
+            return;
+        }
+        $select = $this->pdo->prepare(
+            'SELECT quantity FROM products WHERE id = :id AND business_id = :business_id'
+        );
+        $select->execute(['id' => $productId, 'business_id' => $this->businessId]);
+        $before = (int) $select->fetchColumn();
+        $after = $before + $quantity;
+        if ($after > 2147483647) {
+            throw new DomainException('O stock do produto excederia o limite permitido.');
+        }
+        $update = $this->pdo->prepare(
+            'UPDATE products SET quantity = :quantity, cost_price_cents = :cost, updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id AND business_id = :business_id'
+        );
+        $update->execute([
+            'quantity' => $after,
+            'cost' => $cost,
+            'id' => $productId,
+            'business_id' => $this->businessId,
+        ]);
+        $movement->execute([
+            'business_id' => $this->businessId,
+            'product_id' => $productId,
+            'variant_id' => null,
+            'quantity' => $quantity,
+            'before' => $before,
+            'after' => $after,
+            'reason' => 'Receção parcial da encomenda #' . $orderId,
+            'actor' => $actorUserId > 0 ? $actorUserId : null,
+        ]);
+    }
+
+    private function removePurchaseReturnStock(
+        PDOStatement $movement,
+        int $productId,
+        ?int $variantId,
+        int $quantity,
+        int $orderId,
+        int $actorUserId
+    ): void {
+        if ($variantId !== null) {
+            $select = $this->pdo->prepare(
+                'SELECT quantity FROM product_variants WHERE id = :id AND business_id = :business_id'
+            );
+            $select->execute(['id' => $variantId, 'business_id' => $this->businessId]);
+            $before = (int) $select->fetchColumn();
+            if ($before < $quantity) {
+                throw new DomainException('O stock da variante já não permite esta devolução.');
+            }
+            $after = $before - $quantity;
+            $update = $this->pdo->prepare(
+                'UPDATE product_variants SET quantity = :quantity, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = :id AND business_id = :business_id'
+            );
+            $update->execute(['quantity' => $after, 'id' => $variantId, 'business_id' => $this->businessId]);
+            $movement->execute([
+                'business_id' => $this->businessId,
+                'product_id' => $productId,
+                'variant_id' => $variantId,
+                'quantity' => $quantity,
+                'before' => $before,
+                'after' => $after,
+                'reason' => 'Devolução da encomenda #' . $orderId,
+                'actor' => $actorUserId > 0 ? $actorUserId : null,
+            ]);
+            return;
+        }
+        $select = $this->pdo->prepare(
+            'SELECT quantity FROM products WHERE id = :id AND business_id = :business_id'
+        );
+        $select->execute(['id' => $productId, 'business_id' => $this->businessId]);
+        $before = (int) $select->fetchColumn();
+        if ($before < $quantity) {
+            throw new DomainException('O stock do produto já não permite esta devolução.');
+        }
+        $after = $before - $quantity;
+        $update = $this->pdo->prepare(
+            'UPDATE products SET quantity = :quantity, updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id AND business_id = :business_id'
+        );
+        $update->execute(['quantity' => $after, 'id' => $productId, 'business_id' => $this->businessId]);
+        $movement->execute([
+            'business_id' => $this->businessId,
+            'product_id' => $productId,
+            'variant_id' => null,
+            'quantity' => $quantity,
+            'before' => $before,
+            'after' => $after,
+            'reason' => 'Devolução da encomenda #' . $orderId,
+            'actor' => $actorUserId > 0 ? $actorUserId : null,
+        ]);
     }
 
     private function validReference(string $table, mixed $value): int

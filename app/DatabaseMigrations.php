@@ -18,6 +18,8 @@ final class DatabaseMigrations
             self::applyVariantsAndAttributes($pdo);
             self::applyVariantSales($pdo);
             self::applyPermissionsAuditPurchasing($pdo);
+            self::applyPurchaseCompletion($pdo);
+            self::applyStockTransfers($pdo);
             return;
         }
 
@@ -179,6 +181,215 @@ final class DatabaseMigrations
         self::applyVariantsAndAttributes($pdo);
         self::applyVariantSales($pdo);
         self::applyPermissionsAuditPurchasing($pdo);
+        self::applyPurchaseCompletion($pdo);
+        self::applyStockTransfers($pdo);
+    }
+
+    private static function applyStockTransfers(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 9) {
+            return;
+        }
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec(
+                'CREATE TABLE IF NOT EXISTS stock_balances (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    branch_id INTEGER NOT NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    location_id INTEGER NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+                    variant_id INTEGER NULL REFERENCES product_variants(id) ON DELETE RESTRICT,
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE IF NOT EXISTS stock_transfers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    source_branch_id INTEGER NOT NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    source_location_id INTEGER NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+                    destination_branch_id INTEGER NOT NULL REFERENCES business_branches(id) ON DELETE RESTRICT,
+                    destination_location_id INTEGER NOT NULL REFERENCES stock_locations(id) ON DELETE RESTRICT,
+                    status TEXT NOT NULL DEFAULT \'draft\' CHECK (status IN (\'draft\',\'completed\',\'cancelled\')),
+                    reference TEXT NOT NULL CHECK (length(reference) BETWEEN 1 AND 80),
+                    notes TEXT NULL CHECK (notes IS NULL OR length(notes) <= 2000),
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    completed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT NULL,
+                    UNIQUE (business_id, reference)
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE IF NOT EXISTS stock_transfer_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    transfer_id INTEGER NOT NULL REFERENCES stock_transfers(id) ON DELETE RESTRICT,
+                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+                    variant_id INTEGER NULL REFERENCES product_variants(id) ON DELETE RESTRICT,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0)
+                )'
+            );
+            $pdo->exec(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_balances_location_item
+                 ON stock_balances(business_id, location_id, product_id, COALESCE(variant_id, 0))'
+            );
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_stock_balances_business_location ON stock_balances(business_id, location_id)');
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_stock_transfers_business_status ON stock_transfers(business_id, status, created_at)');
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_stock_transfer_items_transfer ON stock_transfer_items(transfer_id)');
+            self::addColumn($pdo, 'stock_movements', 'transfer_id', 'INTEGER NULL REFERENCES stock_transfers(id) ON DELETE SET NULL');
+            self::addColumn($pdo, 'stock_movements', 'source_location_id', 'INTEGER NULL REFERENCES stock_locations(id) ON DELETE SET NULL');
+            self::addColumn($pdo, 'stock_movements', 'destination_location_id', 'INTEGER NULL REFERENCES stock_locations(id) ON DELETE SET NULL');
+
+            $branches = $pdo->query('SELECT id, business_id, code FROM business_branches WHERE active = 1 ORDER BY id')->fetchAll();
+            $insertLocation = $pdo->prepare(
+                'INSERT OR IGNORE INTO stock_locations (business_id, branch_id, name, code)
+                 VALUES (:business_id, :branch_id, :name, :code)'
+            );
+            $findLocation = $pdo->prepare(
+                'SELECT id FROM stock_locations
+                 WHERE business_id = :business_id AND branch_id = :branch_id AND active = 1
+                 ORDER BY id LIMIT 1'
+            );
+            $principalLocationByBusiness = [];
+            foreach ($branches as $branch) {
+                $businessId = (int) $branch['business_id'];
+                $branchId = (int) $branch['id'];
+                $insertLocation->execute([
+                    'business_id' => $businessId,
+                    'branch_id' => $branchId,
+                    'name' => 'Stock principal',
+                    'code' => 'PRINCIPAL',
+                ]);
+                $findLocation->execute(['business_id' => $businessId, 'branch_id' => $branchId]);
+                $locationId = (int) $findLocation->fetchColumn();
+                if (!isset($principalLocationByBusiness[$businessId])) {
+                    $principalLocationByBusiness[$businessId] = $locationId;
+                }
+            }
+
+            $insertBalance = $pdo->prepare(
+                'INSERT INTO stock_balances (business_id, branch_id, location_id, product_id, variant_id, quantity)
+                 VALUES (:business_id, :branch_id, :location_id, :product_id, :variant_id, :quantity)'
+            );
+            foreach ($principalLocationByBusiness as $businessId => $locationId) {
+                $branchLocation = $pdo->prepare(
+                    'SELECT branch_id FROM stock_locations WHERE id = :id AND business_id = :business_id'
+                );
+                $branchLocation->execute(['id' => $locationId, 'business_id' => $businessId]);
+                $branchId = (int) $branchLocation->fetchColumn();
+                $products = $pdo->prepare('SELECT id, quantity FROM products WHERE business_id = :business_id');
+                $products->execute(['business_id' => $businessId]);
+                foreach ($products->fetchAll() as $product) {
+                    $insertBalance->execute([
+                        'business_id' => $businessId,
+                        'branch_id' => $branchId,
+                        'location_id' => $locationId,
+                        'product_id' => (int) $product['id'],
+                        'variant_id' => null,
+                        'quantity' => (int) $product['quantity'],
+                    ]);
+                }
+                $variants = $pdo->prepare('SELECT id, product_id, quantity FROM product_variants WHERE business_id = :business_id');
+                $variants->execute(['business_id' => $businessId]);
+                foreach ($variants->fetchAll() as $variant) {
+                    $insertBalance->execute([
+                        'business_id' => $businessId,
+                        'branch_id' => $branchId,
+                        'location_id' => $locationId,
+                        'product_id' => (int) $variant['product_id'],
+                        'variant_id' => (int) $variant['id'],
+                        'quantity' => (int) $variant['quantity'],
+                    ]);
+                }
+            }
+
+            $pdo->exec(
+                'CREATE TRIGGER IF NOT EXISTS validate_stock_balance_insert BEFORE INSERT ON stock_balances
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM stock_locations l
+                         WHERE l.id = NEW.location_id AND l.business_id = NEW.business_id
+                           AND l.branch_id = NEW.branch_id
+                     ) THEN RAISE(ABORT, \'O local de stock não pertence à filial indicada.\') END;
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM products p WHERE p.id = NEW.product_id AND p.business_id = NEW.business_id
+                     ) THEN RAISE(ABORT, \'O produto do stock não pertence ao negócio indicado.\') END;
+                 END'
+            );
+            $pdo->exec(
+                'CREATE TRIGGER IF NOT EXISTS validate_stock_transfer_insert BEFORE INSERT ON stock_transfers
+                 BEGIN
+                     SELECT CASE WHEN NEW.source_branch_id = NEW.destination_branch_id
+                         THEN RAISE(ABORT, \'A transferência tem de usar filiais diferentes.\') END;
+                     SELECT CASE WHEN NOT EXISTS (
+                         SELECT 1 FROM stock_locations s JOIN stock_locations d
+                         WHERE s.id = NEW.source_location_id AND d.id = NEW.destination_location_id
+                           AND s.business_id = NEW.business_id AND d.business_id = NEW.business_id
+                           AND s.branch_id = NEW.source_branch_id AND d.branch_id = NEW.destination_branch_id
+                     ) THEN RAISE(ABORT, \'Os locais da transferência têm de pertencer ao mesmo negócio e às filiais indicadas.\') END;
+                 END'
+            );
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (9)');
+            $pdo->exec('PRAGMA user_version = 9');
+            if ($pdo->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('A migração de transferências causou uma violação de chave estrangeira.');
+            }
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
+    }
+
+    private static function applyPurchaseCompletion(PDO $pdo): void
+    {
+        if ((int) $pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_migrations')->fetchColumn() >= 8) {
+            return;
+        }
+        $pdo->beginTransaction();
+        try {
+            self::addColumn($pdo, 'purchase_order_items', 'received_quantity', 'INTEGER NOT NULL DEFAULT 0');
+            self::addColumn($pdo, 'purchase_order_items', 'returned_quantity', 'INTEGER NOT NULL DEFAULT 0');
+            $pdo->exec(
+                'CREATE TABLE IF NOT EXISTS purchase_receipts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+                    purchase_order_item_id INTEGER NOT NULL REFERENCES purchase_order_items(id) ON DELETE RESTRICT,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    unit_cost_cents INTEGER NOT NULL CHECK (unit_cost_cents >= 0),
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE IF NOT EXISTS purchase_returns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE RESTRICT,
+                    purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE RESTRICT,
+                    purchase_order_item_id INTEGER NOT NULL REFERENCES purchase_order_items(id) ON DELETE RESTRICT,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    reason TEXT NULL CHECK (reason IS NULL OR length(reason) <= 2000),
+                    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_purchase_receipts_order ON purchase_receipts(business_id, purchase_order_id)');
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_purchase_returns_order ON purchase_returns(business_id, purchase_order_id)');
+            $pdo->exec('INSERT INTO schema_migrations (version) VALUES (8)');
+            $pdo->exec('PRAGMA user_version = 8');
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $exception;
+        }
     }
 
     private static function applyPermissionsAuditPurchasing(PDO $pdo): void

@@ -47,13 +47,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Não tem permissão para receber esta encomenda.';
         } else {
             try {
-                (new PurchaseService($pdo, $businessId))->receive($orderId, (int) $user['id']);
+                $quantities = is_array($_POST['received_quantity'] ?? null)
+                    ? $_POST['received_quantity'] : null;
+                (new PurchaseService($pdo, $businessId))->receive(
+                    $orderId,
+                    (int) $user['id'],
+                    $quantities
+                );
                 (new AuditPermissionService($pdo))->record($businessId, (int) $user['id'], 'recebida', 'encomenda', $orderId);
                 setFlash('success', 'Encomenda recebida e stock atualizado.');
                 header('Location: purchases.php', true, 303);
                 exit;
             } catch (InvalidArgumentException|DomainException|PDOException $exception) {
                 $error = $exception instanceof PDOException ? 'Não foi possível receber a encomenda.' : $exception->getMessage();
+            }
+        }
+    } elseif (($_POST['action'] ?? '') === 'cancel') {
+        $orderId = validRecordId($_POST['order_id'] ?? null);
+        if (!$canReceive || $orderId === null) {
+            http_response_code(403);
+            $error = 'Não tem permissão para cancelar esta encomenda.';
+        } else {
+            try {
+                (new PurchaseService($pdo, $businessId))->cancel($orderId, (int) $user['id']);
+                (new AuditPermissionService($pdo))->record($businessId, (int) $user['id'], 'cancelada', 'encomenda', $orderId);
+                setFlash('success', 'Encomenda cancelada.');
+                header('Location: purchases.php', true, 303);
+                exit;
+            } catch (InvalidArgumentException|DomainException|PDOException $exception) {
+                $error = $exception instanceof PDOException ? 'Não foi possível cancelar a encomenda.' : $exception->getMessage();
+            }
+        }
+    } elseif (($_POST['action'] ?? '') === 'return') {
+        $orderId = validRecordId($_POST['order_id'] ?? null);
+        if (!$canReceive || $orderId === null) {
+            http_response_code(403);
+            $error = 'Não tem permissão para devolver artigos desta encomenda.';
+        } else {
+            try {
+                $quantities = is_array($_POST['return_quantity'] ?? null)
+                    ? $_POST['return_quantity'] : [];
+                (new PurchaseService($pdo, $businessId))->returnItems(
+                    $orderId,
+                    $quantities,
+                    is_string($_POST['reason'] ?? null) ? $_POST['reason'] : '',
+                    (int) $user['id']
+                );
+                (new AuditPermissionService($pdo))->record($businessId, (int) $user['id'], 'devolvida', 'encomenda', $orderId);
+                setFlash('success', 'Devolução registada e stock atualizado.');
+                header('Location: purchases.php', true, 303);
+                exit;
+            } catch (InvalidArgumentException|DomainException|PDOException $exception) {
+                $error = $exception instanceof PDOException ? 'Não foi possível devolver os artigos.' : $exception->getMessage();
             }
         }
     }
@@ -100,13 +145,15 @@ require $root . '/app/views/header.php';
             <div class="field"><label for="supplier_id">Fornecedor *</label><select id="supplier_id" name="supplier_id" required><option value="">Selecionar</option><?php foreach ($supplierRows as $supplier): ?><option value="<?= (int) $supplier['id'] ?>"><?= e($supplier['name']) ?></option><?php endforeach; ?></select></div>
             <div class="field field--wide"><label for="notes">Notas</label><textarea id="notes" name="notes" maxlength="2000"></textarea></div>
         </div>
-        <div class="form-grid">
-            <div class="field"><label for="product_id">Artigo *</label><select id="product_id" name="product_id[]" required><option value="">Selecionar</option><?php foreach ($productRows as $product): ?><option value="<?= (int) $product['id'] ?>" data-variant="<?= (int) ($product['variant_id'] ?? 0) ?>"><?= e($product['name']) ?><?= $product['variant_id'] ? ' · ' . e($product['identifier']) : '' ?></option><?php endforeach; ?></select></div>
-            <input type="hidden" name="variant_id[]" value="">
-            <div class="field"><label for="quantity">Quantidade *</label><input id="quantity" name="quantity[]" type="number" min="1" step="1" value="1" required></div>
-            <div class="field"><label for="unit_cost">Custo unitário (€) *</label><input id="unit_cost" name="unit_cost[]" inputmode="decimal" value="0,00" required></div>
+        <div class="purchase-lines" data-purchase-lines>
+            <div class="form-grid purchase-line">
+                <div class="field"><label for="product_id">Artigo *</label><select id="product_id" name="product_id[]" required><option value="">Selecionar</option><?php foreach ($productRows as $product): ?><option value="<?= (int) $product['id'] ?>" data-variant="<?= (int) ($product['variant_id'] ?? 0) ?>"><?= e($product['name']) ?><?= $product['variant_id'] ? ' · ' . e($product['identifier']) : '' ?></option><?php endforeach; ?></select></div>
+                <input type="hidden" name="variant_id[]" value="">
+                <div class="field"><label for="quantity">Quantidade *</label><input id="quantity" name="quantity[]" type="number" min="1" step="1" value="1" required></div>
+                <div class="field"><label for="unit_cost">Custo unitário (€) *</label><input id="unit_cost" name="unit_cost[]" inputmode="decimal" value="0,00" required></div>
+            </div>
         </div>
-        <div class="form-actions"><button class="button button--primary" type="submit">Criar encomenda</button></div>
+        <div class="form-actions"><button class="button button--secondary" type="button" data-add-purchase-line>Adicionar linha</button><button class="button button--primary" type="submit">Criar encomenda</button></div>
     </form>
 </section>
 <?php endif; ?>

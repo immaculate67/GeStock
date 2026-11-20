@@ -233,6 +233,57 @@ Not implemented or not yet verified against the complete specification:
   interfaces, central global search, branch stock-location enforcement,
   supplier/customer purchase-history views and the final responsive UI review.
 
+### V6.6 progressive business wizard checkpoint
+
+- Completed the progressive four-step business creation workflow: identity,
+  industry template, fiscal/location profile and initial modules.
+- Added a mandatory pre-creation review screen with a confirm-and-create action
+  and a return path to the wizard.
+- Business creation now persists currency, tax rate, timezone, address, phone,
+  tax identifier, principal branch name/code/address and module selection
+  transactionally.
+- Added matching business profile editing in settings and loaded saved fiscal,
+  timezone and principal branch values into the settings form.
+- Added template-derived default module selections and browser-side validation
+  for wizard steps.
+- Verification: `php tests/run.php` passed **118 isolated checks**; PHP syntax,
+  JavaScript syntax and `git diff --check` passed. The live SQLite database was
+  not modified.
+- Exact next task: complete purchase receiving/cancellation/partial receipt and
+  multi-line UI, then continue branch/local stock transfers.
+
+### V6.7 purchase completion checkpoint
+
+- Added additive migration version 8 for received/returned line quantities,
+  purchase receipts and purchase return history.
+- `PurchaseService` now supports full or partial stock receipts, receipt history,
+  cancellation before receipt and tracked supplier returns with stock rollback.
+- Added purchase server actions for receive, cancel and return plus multi-line
+  purchase creation controls and variant selection in the browser.
+- Partial receipt and supplier-return tests pass transactionally with isolated
+  stock and cost assertions.
+- Verification: `php tests/run.php` passed **119 isolated checks**; PHP syntax,
+  JavaScript syntax and `git diff --check` passed. The live SQLite database was
+  not modified.
+- Exact next task: branch/local stock-location enforcement and stock transfers,
+  followed by dedicated category bulk/archive workflows.
+
+### V6.8 stock transfers checkpoint
+
+- Added additive migration version 9 for stock balances, stock transfer drafts,
+  completed transfer history and location references in stock movements.
+- Created `StockTransferService` with tenant-isolated branch/location
+  validation, transfer drafts, execution and cancellation.
+- Added stock-by-location and stock-transfer workflows to `stock.php`, including
+  origin/destination selection, product/variant lines, draft history and
+  execution actions.
+- New branches automatically receive a principal stock location.
+- Verification: `php tests/run.php` passed **122 isolated checks**; PHP syntax,
+  JavaScript syntax and `git diff --check` passed. The live SQLite database was
+  not modified.
+- Exact next task: complete dedicated category archive/move/merge/bulk
+  workflows, then continue uniform permission and audit enforcement.
+
 ## Checkpoint V6.4 congelado
 
 - Data do checkpoint: 2026-11-19.
